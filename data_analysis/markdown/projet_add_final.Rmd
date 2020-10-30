@@ -1,0 +1,687 @@
+---
+title: "ADD - Analyse de 20 indicateurs départementaux"
+author: "Vincent Le Goualher & David Wang"
+date: "02/01/2020"
+output:
+  html_document:
+    number_sections: yes
+    toc: yes
+  pdf_document:
+    toc: yes
+---
+
+<style>
+    body .main-container {
+        max-width: 5000px;
+    }
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+               fig.align = "center",
+               fig.retina = 2,
+               fig.width = 10,
+               cache = FALSE,
+               cache.lazy = FALSE)
+
+# PACKAGES
+library(here)
+library(tidyverse)
+library(readxl)
+library(DescTools)
+library(GGally)
+library(FactoMineR)
+library(corrplot)
+library(leaps)
+library(kableExtra)
+library(summarytools)
+library(factoextra)
+
+knitr::opts_knit$set(root.dir = here())
+```
+  
+# Présentation des données originales  
+  
+Source : https://www.insee.fr/fr/statistiques/2512993  
+    
+Le jeu de données original provient de l'INSEE et il est constitué d'une *vingtaine d'indicateurs* :  
+- sociaux : espérance de vie H/F à la naissance / disparité de niveau de vie / taux de pauvreté / jeunes non-insérés / Accès aux soins de proximité / Population en zone inondable  
+- économiques : taux d'emploi / jeunes diplômés / mode de transport pour aller au travail / poids de l'économie sociale et solidaire  
+- environnementaux : taux de valorisation des déchets / part de surface artificialisée / taux d'agriculture biologique / production de granulats / Distribution des sources d'énergie renouvelables  
+- de gouvernance : taux de participation au 1er tour des élections législatives / part de la population couverte par un agenda 21.  
+  
+On précise que la production de granulats correspond à la production de matériaux de construction. L'extraction de la matière première pour la production a lieu principalement en France, et a un impact négatif sur l'environnement. Une description plus approfondie des indicateurs ainsi que leur source est disponible dans l'onglet "Documentation" du fichier source "DD-indic-reg-dep_janv2018.xls". Les organismes qui produisent les indicateurs sont par exemple l'INSEE lui-même, l'Ademe, le ministère de l'Intérieur ou encore le SDES.  
+  
+Les indicateurs ci-dessus sont relevés pour chaque *région* et chaque *départements* de France, et à des *dates* différentes.
+   
+# Le jeu de données analysé dans cette étude 
+  
+Le jeu de données analysé dans le cadre de cette étude est seulement un extrait des données originales. Il est au final constitué d'une centaine d'individus, de 22 variables quantitatives et d'une variable qualitative :  
+- Les individus sont les *départements Français*.  
+- Les variables quantitatives sont les indicateurs de développement durable. La *valeur retenue est la plus récente* pour chaque indicateur disponible.  
+- Les variables sont exprimées en *pourcentage*, exceptées les espérances de vie (*années*), les disparités de niveau de vie (*rapport interdécile*) et la production de granulats (*tonnes*)
+- Une variable qualitative sera ajoutée pour l'ACP : il s'agit de la *région* à laquelle appartient le département considéré.  
+  
+# Import des données et traitement des valeurs manquantes
+  
+## Traitement en amont et import des données
+  
+On procède à un premier traitement du fichier source sur tableur : récupération de la liste des individus (départements) et des variables (indicateurs à la date la plus récente). On renomme les variables avec des noms concis, sans accents pour une meilleure lisibilité et pour éviter les problèmes de compatibilité. À partir de ce fichier pré-traité, "dataset_fr.xlsx", on réalise l'import dans le logiciel R.
+  
+Les données manquantes, notées "nd" (non disponible) ou "nc" (non déterminée) dans la nomenclature INSEE, sont convertit au format R, à savoir NA (Not Available).
+   
+```{r, include = FALSE}
+don <- read_excel("data/dataset_fr.xlsx")
+don <- don %>%
+  # On convertit les valeurs manquantes, notées "nd" (non disponible) ou "nc" (non déterminée) dans le fichier source
+  # dans un format adapté sous R, à savoir NA (Not Available)
+  na_if("nc") %>%
+  na_if("nd") %>% 
+  mutate( # On type les numéros/noms de département en facteurs, et on corrige le type de variables quantitatives de "character" à "double"
+    num_dpt = as.factor(num_dpt),
+    label_dpt = as.factor(label_dpt),
+    tx_agriculture_bio = as.double(tx_agriculture_bio),
+    production_granulats = as.double(production_granulats)
+  ) %>%
+  arrange(num_dpt)
+```
+  
+Voici un aperçu des données :   
+  
+```{r, echo = FALSE}
+don %>%
+  slice(1:5) %>%
+  kable("html") %>%
+  kable_styling(bootstrap_options = c("bordered", "striped") ) %>%
+  scroll_box(width = "100%", height = "100%")
+```
+  
+## Valeurs manquantes  
+
+Le nombre de valeurs manquantes parmi les données est `r don %>% summarise_all( .funs =  ~sum(is.na(.)) ) %>% as.double() %>% sum()` pour un total de `r nrow(don) * ncol(don)` cellules. Évaluons le nombre de valeurs manquantes par variable :
+  
+```{r, echo = FALSE}
+don %>%
+  summarise_all( .funs =  ~sum(is.na(.)) ) %>%
+  kable("html") %>%
+  kable_styling(bootstrap_options = c("striped", "bordered") ) %>%
+  scroll_box(width = "100%", height = "100%")
+```
+
+Presque toutes les variables présentent au moins une variable manquante. En parcourant les données grâce à la fonction View(), on s'aperçoit que les valeurs manquantes semblent concentrées sur les dernières lignes du jeu de données, à savoir les départements d'outre mer : Guadeloupe, Martinique, Guyane, La Réunion, Mayotte. Pour le vérifier, comptons le nombre de valeurs manquantes par ligne et en ordre décroissant :
+
+```{r, echo = FALSE}
+don$na_count_row <- apply(don, 1, function(x) sum(is.na(x)))
+don %>%
+  arrange( desc(na_count_row) ) %>%
+  select(num_dpt, label_dpt, na_count_row) %>%
+  slice(1:10) %>%
+  kable("html") %>%
+  kable_styling(bootstrap_options = c("striped", "bordered"), full_width = F )
+```
+
+La Guadeloupe, la Guyane et Mayotte présentent en effet 4 à 19 valeurs manquantes. La Martinique et La Réunion ne présentent qu'une seule valeur manquante. Ces valeurs sont difficiles à inférer car les départements d'outre mer présentent souvent des valeurs éloignées de la moyenne. En témoignent ces quelques exemples :    
+- Espérance de vie des hommes dans l'ordre croissant  
+- taux de pauvreté dans l'ordre décroissant  
+- taux d'emploi dans l'ordre croissant  
+- taux de valorisation de la matière organique dans l'ordre croissant  
+- Participation au 1er tour des législatives 2017 dans l'ordre croissant  
+
+```{r, echo = FALSE}
+tesp <- don %>%
+  select(label_dpt, esperance_vie_h) %>%
+  arrange(esperance_vie_h) %>%
+  slice(1:7)
+
+tpau <- don %>%
+  select(label_dpt, tx_pauvrete) %>%
+  arrange(desc(tx_pauvrete)) %>%
+  slice(1:7)
+
+temp <- don %>%
+  select(label_dpt, tx_emploi ) %>%
+  arrange(tx_emploi) %>%
+  slice(1:7)
+
+tval <- don %>%
+  select(label_dpt, tx_valorisation_matiere_organique ) %>%
+  arrange(tx_valorisation_matiere_organique) %>%
+  slice(1:7)
+
+tpar <- don %>%
+  select(label_dpt, tx_participation_1er_tour_legislatives ) %>%
+  arrange(tx_participation_1er_tour_legislatives) %>%
+  slice(1:7)
+
+kable( list(tesp, tpau, temp, tval, tpar) ) %>%
+  kable_styling(bootstrap_options = c("bordered", "striped"), full_width = F ) %>%
+  scroll_box(width = "100%", height = "100%")
+```
+  
+On voit que l'on trouve souvent les départements d'outre mer dans les valeurs minimales ou maximales. Avant de tirer une conclusion, examinons ces valeurs au regard des caractéristiques des variables en question :
+
+```{r, echo = FALSE}
+don %>%
+  select(esperance_vie_h, tx_pauvrete, tx_emploi, tx_valorisation_matiere_organique, tx_participation_1er_tour_legislatives) %>%
+  gather(key = "variable", value = "valeur", everything()) %>%
+  group_by(variable) %>%
+  summarise(moyenne = mean(valeur, na.rm = TRUE),
+            ecart_type = sd(valeur, na.rm = TRUE) ) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = c("bordered", "striped") )
+```
+
+- Pour l'espérance de vie masculine, Mayotte est en dessous de la moyenne de 3 écart-types.  
+- La Martinique a un taux de pauvreté deux fois supérieur à la moyenne nationale (+3 écart-types), et La Réunion presque trois fois supérieur (+5 écart-types).  
+- La Martinique, la Guadeloupe, La Réunion et la Guyane sont ont un taux d'emploi inférieur à la moyenne de deux à quatre écart-types.  
+- La Martinique, la Guadeloupe et la Guyane ont un taux de participation au premier tour des législatives 2017 environ deux fois plus petit que la moyenne nationale, et un taux de valorisation des matières organiques -2 écart-types de la moyenne nationale.  
+
+Ainsi, on décide d'exclure les département d'outre mer de l'étude, plutôt que d'essayer d'inférer les valeurs manquantes. On corrige les quatre valeurs manquantes restantes par la moyenne de la variable correspondante.
+
+```{r, include = FALSE}
+don <- don %>%
+  slice(1:96) %>%
+  mutate(
+    tx_agriculture_bio = ifelse( is.na(tx_agriculture_bio), mean(tx_agriculture_bio, na.rm=TRUE), tx_agriculture_bio ),
+    production_granulats = ifelse( is.na(production_granulats), mean(production_granulats, na.rm=TRUE), production_granulats )
+  ) %>%
+  select(-na_count_row)
+```
+
+# Analyse univariée
+
+## Boxplots
+  
+```{r, echo = FALSE, out.width = '100%'}
+don_quanti <- don %>% select( -num_dpt, -label_dpt )
+don_gathered <- don_quanti %>% gather( key = "variable", value = "valeur", esperance_vie_h:tx_pop_couverte_agea_21)
+
+ggplot( data = don_gathered, mapping = aes( x = variable, y = valeur ) ) +
+  geom_boxplot() +
+  facet_wrap(~variable, scales = "free") +
+  theme_minimal()
+
+# don_quanti %>%
+#   summary() %>%
+#   kable("html") %>%
+#   kable_styling(bootstrap_options = c("condensed", "bordered") ) %>%
+#   scroll_box(width = "100%", height = "100%")
+```
+
+La ligne centrale des boxplots représente la médiane et les frontières du rectangle qui encadre la médiane sont les premier et troisième quartile. Les segments tracés à partir des frontières du rectangle joignent les valeurs qui ne s'éloignent pas de frontières du rectangle de plus d'1,5 fois l'écart inter-quartile.  
+
+Tout d'abord, on peut noter que les distributions des espérances de vie par département sont relativement ramassées, avec une variabilité légèrement supérieure pour les hommes, mais surtout une médiane significativement inférieure pour les hommes également.
+  
+On distingue principalement deux groupes de variables :  
+- Les parts d'énergie renouvelables, la production de granulats, la part de population éloignée des services de santé, la part de la population couverte par un agenda 21 font plutôt état d'une variabilité inter-quartile importante et ont moins tendance à posséder des outliers.  
+- L'inégalité de niveau de vie, la part d'économie solidaire, les variables sur le moyen de transport pour aller au travail, le taux d'agriculture bio, le taux d'emploi, le taux de jeunes diplômés, le taux de pauvreté, la part de la population en zone inondable et le taux de surface artificialisée sont relativement bien regroupées autour de la médiane, et présentent donc une variabilité inter-quartile plutôt réduite, mais une variabilité importante dans les 1er/4ème quartiles avec des valeurs extrêmes remarquables.  
+
+Pour les variables du deuxième groupe, regardons de plus près qui sont les départements possédant les valeurs minimales/maximales pour les inégalités de niveau de vie, la part de la population qui va au travail en transports en commun / en voiture, le taux de pauvreté, le taux d'emploi et le taux de jeunes diplômés. Y a-t-il des départements qui affichent des valeurs extrêmes de façon récurrentes, en particulier pour ces variables ?
+
+Valeurs maximales pour : les inégalités, le transport en commun, le taux de pauvreté.  
+Valeurs minimales pour : le transport en voiture, le taux d'emploi, le taux de jeunes diplômés.
+
+```{r, echo = FALSE}
+t1 <- don %>%
+  select(label_dpt, inegalites_niveau_vie) %>%
+  arrange(desc(inegalites_niveau_vie)) %>%
+  slice(1:5)
+
+t2 <- don %>%
+  select(label_dpt, transport_travail_commun) %>%
+  arrange(desc(transport_travail_commun)) %>%
+  slice(1:5)
+
+t3 <- don %>%
+  select(label_dpt, transport_travail_voiture ) %>%
+  arrange(transport_travail_voiture) %>%
+  slice(1:7)
+
+t4 <- don %>%
+  select(label_dpt, tx_pauvrete) %>%
+  arrange(desc(tx_pauvrete)) %>%
+  slice(1:5)
+
+t5 <- don %>%
+  select(label_dpt, tx_emploi ) %>%
+  arrange(tx_emploi) %>%
+  slice(1:5)
+
+t6 <- don %>%
+  select(label_dpt, tx_jeunes_diplomes ) %>%
+  arrange(tx_jeunes_diplomes) %>%
+  slice(1:5)
+
+kable( list(t1, t2, t3, t4, t5, t6) ) %>%
+  kable_styling(bootstrap_options = c("bordered", "striped")) %>%
+  scroll_box(width = "100%", height = "100%")
+```
+  
+Tableau symétrique au tableau ci-dessus :  
+  
+```{r, echo = FALSE}
+t1 <- don %>%
+  select(label_dpt, inegalites_niveau_vie) %>%
+  arrange(inegalites_niveau_vie) %>%
+  slice(1:5)
+
+t2 <- don %>%
+  select(label_dpt, transport_travail_commun) %>%
+  arrange(transport_travail_commun) %>%
+  slice(1:5)
+
+t3 <- don %>%
+  select(label_dpt, transport_travail_voiture ) %>%
+  arrange(desc(transport_travail_voiture)) %>%
+  slice(1:7)
+
+t4 <- don %>%
+  select(label_dpt, tx_pauvrete) %>%
+  arrange(tx_pauvrete) %>%
+  slice(1:5)
+
+t5 <- don %>%
+  select(label_dpt, tx_emploi ) %>%
+  arrange(desc(tx_emploi)) %>%
+  slice(1:5)
+
+t6 <- don %>%
+  select(label_dpt, tx_jeunes_diplomes ) %>%
+  arrange(desc(tx_jeunes_diplomes)) %>%
+  slice(1:5)
+
+kable( list(t1, t2, t3, t4, t5, t6) ) %>%
+  kable_styling(bootstrap_options = c("bordered", "striped")) %>%
+  scroll_box(width = "100%", height = "100%")
+```
+  
+Paris semble être un département atypique : les inégalités de niveau de vie y sont maximales et le taux de jeunes diplômés également. Comme on peut s'y attendre, la part du transport en voiture pour aller au travail est minimale, et la part de transport en commun est maximale. D'une façon générale, on ne trouve que des départements d'Île-de-France dans le "top 5" pour le transport en commun et le "bottom 5" pour le transport en voiture, à l'exception du Rhône. Par ailleurs, il est à noter que la Seine-Saint-Denis affiche le plus grand taux de pauvreté, tout en étant parmi les 5 départements ayant les plus grandes inégalités. Au final, on trouve souvent les départements d'Île-de-France dans ce premier tableau.
+  
+À l'inverse, les départements qui apparaissent dans le second tableau sont pour le plupart des départements de Province. La Vendée affiche les plus faibles inégalités de niveau de vie, et parmi les taux de transport (resp. en commun) en voiture les plus élevés (resp. les plus élevés.). La Mayenne possède à la fois des inégalités faibles, et un taux d'emploi élevé. Mais si la Haute-Savoie a le taux d'emploi le plus important de France, elle montre aussi de fortes inégalités (cf premier tableau), ce qui est pour nous une source d'étonnement. L'analyse bivariée et surtout l'ACP nous en diront plus sur les éventuels liens entre ces deux variables.  
+
+
+## Distributions
+
+```{r, out.width = '100%', echo = FALSE}
+don_gathered <- don_quanti %>% gather( key = "variable", value = "valeur", esperance_vie_h:tx_pop_couverte_agea_21)
+ggplot( data = don_gathered, mapping = aes( x = valeur ) ) +
+  geom_histogram( mapping = aes(y = ..density..), color = "blue" ) +
+  geom_density( mapping = aes(y = ..density..), size = 0.8, color = "black" ) +
+  theme_minimal() +
+  facet_wrap(~variable, scales = "free")
+```
+  
+En se basant sur leur histogramme de distibution empirique, certaines variables semblent suivre une loi normale. C'est le cas notamment :  
+- De l'espérance de vie des hommes, qui de façon surprenante a un profil plus "normal" que l'espérance de vie des femmes.
+- La part d'économie solidaire
+- La part de transport autre que transport en commun/voiture
+- Le taux d'emploi
+- Le taux de participation au 1er tour des législatives
+- Le taux de valorisation des matières organiques  
+  
+Le niveau de salaire, qui ne figure pas dans le jeu de données étudié présentement, est connu pour suivre une loi log-normale (log-logistique plus exactement). La variable qui a priori pourrait être fortement corrélé au niveau de salaire est le niveau d'inégalités de vie. En effet, sa distribution empirique fait penser à une loi log-normale. Néanmoins, cette ressemblance semble être trompeuse puisqu'un test de Kolmogorov-Smirnov infirme cette hypothèse (au seuil de confiance 99%) :  
+  
+```{r, echo=FALSE}
+ineg <- don %>% pull(inegalites_niveau_vie)
+mu_hat <- mean(ineg)
+sigma_hat <- sd(ineg)
+
+meanlog <- log( mu_hat^2 / sqrt( sigma_hat^2 + mu_hat^2 ) )
+sdlog <- sqrt( log( 1 + ( sigma_hat^2 / mu_hat^2 ) ) )
+
+ks.test(ineg, "plnorm", meanlog = meanlog, sdlog = sdlog)
+
+```
+
+Le taux d'agriculture biologique a presque le profil d'une loi uniforme sur 0% - 10%, avec quelques outliers qui ne dépassent guère les 20%.  
+Les histogrammes du taux de jeunes non-insérés et dans une moindre mesure, celui du le taux de pauvreté, font apparaître deux modes :  
+- Pour le taux de jeunes non-insérés : un mode aux alentours de 20 %, et un second à ~28%  
+- pour le taux de pauvreté, un mode à 12,5% et un second à 15%  
+Un mélange de deux lois normales pourraient être approprié pour modéliser ces deux variables.
+  
+Enfin, les distributions empiriques viennent nuancer les deux groupes établis lors de l'étude des boxplots : celui des variables faisant état d'une grande variabilité avec peu d'outliers, et les autres plus "ramassées" autour de la médiane avec peu de variabilité et généralement plus d'outliers clairs.  
+Pour le 1er groupe, la part d'énergies renouvelables autres qu'éolienne/solaire présente un mode remarquable en dessous des 5%, tandis que la pzt d'énergie renouvelable a un mode extrêmement net à 0%. En outre, le taux de la population couverte par un agenda 21 présente également une variabilité importante en dessous des 20% avec les valeurs de 0% et de ~15% qui sont plus communes que les autres.
+Pour le second groupe, on constate que la faible variabilité est finalement à nuancer pour la part de la population qui se rend au travail par d'autres moyen que la voiture / les transports en commun, le taux de jeunes diplômés (uniformément réparti entre 30 et 45%) et le taux de pauvreté (avec deux modes identifiables).
+
+# Analyse bivariée
+
+## Corrélations remarquables
+  
+On représente ci-dessous les couples de variables présentant les 10 plus fortes corrélations en valeur absolue :
+
+```{r, echo = FALSE}
+# Pairs
+don_quanti %>%
+  cor() %>%
+  as_tibble() %>%
+  bind_cols( tibble( var1 = colnames( . ) ) ) %>%
+  select( var1, everything() ) %>%
+  gather( key = "var2", value = "correlation", esperance_vie_h:tx_pop_couverte_agea_21) %>%
+  mutate( correlation = round(correlation, 4) ) %>%
+  filter( correlation != 1 ) %>%
+  distinct(correlation, .keep_all = TRUE ) %>%
+  arrange( desc(correlation) ) %>%
+  slice(c(1:5, (nrow(.)-4):nrow(.)) ) %>%
+  kable("html") %>%
+  kable_styling(bootstrap_options = c("condensed", "bordered"), full_width = F )
+```
+  
+Certains couples de variables très corrélées ne sont guère étonnants :  
+- Le taux de surface artificialisée et la part de la population qui se rend au travail en transport sont fortement corrélés (coefficient de 0.92) puisque des infrastructures de transport en commun développées supposent une part importante de surfaces artificialisées. À l'inverse, le taux de surfaces artificialisée est négativement corrélée avec la part de la population qui se rend au travail en voiture (coefficient équivalent en valeur absolue : -0.91).
+- Les parts de population qui se rendent au travail en voiture / en transport en commun sont négativement corrélées
+- L'espérance de vie des hommes est, sans surprise, positivement corrélée à celle des femmes. Néanmoins, on peut s'étonner du coefficient de corrélation de 0.76. Cette valeur est plus faible que ce à quoi nous nous attendions, compte tenu de la proximité des deux variables.
+- Le taux d'emploi est négativement corrélé au taux de pauvreté.
+- Le taux de jeunes diplômés est négativement corrélé au taux de jeunes insérés dans la société.  
+  
+Les corrélations que nous n'avions pas anticipées sont celles des inégalités de niveau de vie avec la part de surface artificialisée et les modes de transport pour aller au travail (qui sont toutes trois relativement équivalentes car ces trois variables sont fortement liées).  
+  
+À l'inverse, certaines variables ne sont pas ou peu corrélées, alors qu'a priori on aurait pu le penser. Par exemple, les inégalités de niveau de vie ne sont pas corrélées au taux d'emploi (corrélation : `r round(cor(don_quanti$inegalites_niveau_vie, don_quanti$tx_emploi),2)`), et peu corrélées au taux de pauvreté (`r round(cor(don_quanti$inegalites_niveau_vie, don_quanti$tx_pauvrete),2)`). On constate également que le taux de la population couverte par un agenda 21 n'est (pour le moment) pas lié au taux d'agriculture biologique (`r round(cor(don_quanti$tx_pop_couverte_agea_21, don_quanti$tx_agriculture_bio),2)`), au taux de transport en voiture (`r round(cor(don_quanti$tx_pop_couverte_agea_21, don_quanti$transport_travail_voiture),2)`) ou encore au taux de valorisation des matières organiques (`r round(cor(don_quanti$tx_pop_couverte_agea_21, don_quanti$tx_valorisation_matiere_organique),2)`).
+
+## Représentation des variables deux à deux :
+
+On représente deux-à-deux l'ensemble des variables qui figurent dans le tableau ci-dessus.  
+
+```{r, out.width = '100%', echo = FALSE}
+variables <- don_quanti %>%
+  cor() %>%
+  as_tibble() %>%
+  bind_cols( tibble( var1 = colnames( . ) ) ) %>%
+  select( var1, everything() ) %>%
+  gather( key = "var2", value = "correlation", esperance_vie_h:tx_pop_couverte_agea_21) %>%
+  mutate( correlation = round(correlation, 4) ) %>%
+  filter( correlation != 1 ) %>%
+  distinct(correlation, .keep_all = TRUE ) %>%
+  arrange( desc(correlation) ) %>%
+  slice(c(1:7, (nrow(.)-6):nrow(.)) )
+
+variables <-unique( c( pull(variables,var1), pull(variables,var2) ) )
+
+# Pairs
+ggpairs(
+  data = don_quanti %>% select(variables),
+  columnLabels = c("TxSurfArt", "TxTranspC", "EspVF", "TxJdipl", "TxJNonIns", "TxEmp", "TxTranspV", "Ineg", "EspVH", "TxPauv"),
+  lower = list( continuous = wrap( "smooth", size=0.1 ) ),
+  diag = "blank",
+  upper = list( continuous = wrap("cor", size = 3) )
+  ) +
+theme_minimal(base_size = 8)
+```
+
+# Analyse en Composantes Principales
+
+On effectue une ACP sur l'ensemble des variables quantitatives du jeu de données. On ajoute une variable qualitative supplémentaire : la région du département. Cette variable ne contribue pas à la construction des axes. Une modalité sera représentée par le barycentre des individus qui possèdent la modalité en question.  
+  
+## Nombre d'axes retenus
+
+Tout d'abord, déterminons le nombre d'axes qui seront retenus dans cette étude. Pour cela on représente l'inertie (valeur propre) associée à chaque axe :
+
+```{r echo=F, message=FALSE, warning=FALSE}
+dpt_region <- read_csv("data/departments_regions_france_2016.csv") %>%
+  mutate( departmentCode = as.factor(departmentCode) )
+
+don_acp <- don_quanti %>%
+  bind_cols( dpt_region %>% arrange(departmentCode) %>% select(regionName) %>% slice(1:96) ) %>%
+  as.data.frame()
+
+rownames(don_acp) <- don %>% slice(1:96) %>% pull(label_dpt)
+
+don_acp_bis=don_acp
+don_acp_bis$"regionName"=NULL
+res.pca = PCA(don_acp_bis, graph = FALSE)
+eig.val = get_eigenvalue(res.pca)
+knitr::kable(eig.val)
+fviz_eig(res.pca, addlabels = TRUE)
+
+```
+
+On observe que 75% de la variation est expliquée par les 5 premiers axes. Pour cette raison, on choisit de ne conserver que les cinq premiers axes. Avant de considérer que l’information contenue sur les autres axes comme résiduelle  regardons la "qualité de représentation" et le "niveau de contribution" des axes.
+
+```{r, echo=F}
+var = get_pca_var(res.pca)
+par(mfrow = c(1,2 ))
+corrplot(var$cos2, is.corr=FALSE,title="Qualité de représentation",mar=c(0,0,1,0))
+corrplot(var$contrib,is.corr=FALSE,title="Niveau de contribution",mar=c(0,0,1,0)) 
+
+#fviz_cos2(res.pca, choice = "var", axes = 1:5,title="Qualité de représentation sur Dim-1-2-3-4-5",add=TRUE)
+#fviz_cos2(res.pca, choice = "var", axes = 1:4,title="Qualité de représentation sur Dim-1-2-3-4",add=TRUE)
+
+```
+
+
+On remarque que malgré une contribution de 6% du cinquième axe celui-ci ne semble pas apporter une contribution significative pour notre alanyse. Nous décidons de ne concerver que les quatre premiers axes pour la suite de l'analyse.  
+
+## Études des axes
+
+Pour des raisons de lisibilité dans la suite nous allons afficher sur les graphiques uniquement les variables et les 30 départements les mieux représentés par les axes selon le critère "cos2".
+
+### Axes 1-2
+
+
+```{r}
+fviz_pca_var(res.pca, col.var = "cos2",select.var = list(cos2 = 0.6),gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),repel = TRUE,axes = c(1, 2))
+
+```
+
+Le cercle de corrélation nous montre de forte corrélation entre le mode transport pour aller au travail (voiture ou transport en commun), le taux de surface artificialisée et l'inégalité des niveaux de vie. La corrélation est positive pour les variables transports en commun, taux de surface artificialisée et inégalité des niveau de vie. Alors que la variable transport en voiture elle est négativement corrélée avec les trois variables précédentes.
+
+On peut donner  les significations suivantes aux différentes parties du cercle:
+
+- Le quart en haut à droite représente une zone avec marché de l'emploi dynamique et avec un bon taux de jeunes diplômés. Alors que le quart opposé lui représente l'inverse.
+
+- Le quart en bas à droite représente des zones fortement urbanisées où les transports en commun sont privilégiés et où les inégalités sont fortes.
+
+Regardons comment sont situés les 30 départements les mieux représentés par les axes 1-2.
+```{r}
+
+fviz_pca_ind (res.pca,select.ind = list(cos2 = 30), col.ind = "cos2",gradient.cols = c("#00AFBB","#E7B800", "#FC4E07"),repel = TRUE,axes = c(1,2))
+```
+
+Si un département est proche du point de croisement des axes cela signifie qu'il est dans la moyenne par rapport aux variables ci-dessus et on ne peut pas vraiment faire d'interprétation particulière. Intéressons-nous à ceux qui sont éloignés du centre. Parmi les départements très excentrés nous retrouvons Paris qui d'après sa position est un département très urbanisé où la population privilégie les transports en commun pour aller au travail et avec un fort coefficient d'inégalités et à l'opposé nous retrouvons des départements comme la Cote-d'Armor ou Deux-Sèvres qui sont peu urbanisés et avec un faible niveau d'inégalité dans leur population.
+
+### Axes 1-3
+
+```{r}
+fviz_pca_var(res.pca,select.var = list(cos2 = 0.6), col.var = "cos2",gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),repel = TRUE,axes = c(1, 3))
+```
+
+
+```{r}
+fviz_pca_ind (res.pca, select.ind = list(cos2 = 30), col.ind = "cos2",gradient.cols = c("#00AFBB","#E7B800", "#FC4E07"),repel = TRUE,axes = c(1,3))
+```
+
+
+
+### Axes 1-4
+
+On représente tout d'abord le cercle des corrélations, ainsi qu'un graphique qui résume les corrélations entre variables et axes principaux :  
+```{r}
+fviz_pca_var(res.pca, select.var = list(cos2 = 0.6), col.var = "cos2",gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),repel = TRUE,axes = c(1, 4))
+```
+
+
+
+
+```{r}
+fviz_pca_ind (res.pca, select.ind = list(cos2 = 30), col.ind = "cos2",gradient.cols = c("#00AFBB","#E7B800", "#FC4E07"),repel = TRUE,axes = c(1,4))
+```
+
+
+
+### Axes 2-3
+
+```{r}
+fviz_pca_var(res.pca, select.var = list(cos2 = 0.6), col.var = "cos2",gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),repel = TRUE,axes = c(2, 3))
+```
+
+On note que seul le taux de pauvreté est bien représenté par les axes 2-3. Par conséquent les départements les plus en haut à gauche sont ceux qui possèdent les plus hauts taux de pauvreté alors que ceux le plus à l'opposé ont le taux le plus bas.
+
+```{r}
+fviz_pca_ind (res.pca, select.ind = list(cos2 = 30), col.ind = "cos2",gradient.cols = c("#00AFBB","#E7B800", "#FC4E07"),repel = TRUE,axes = c(2,3))
+```
+
+
+
+
+### Axes 2-4
+
+```{r}
+fviz_pca_var(res.pca, select.var = list(cos2 = 0.6), col.var = "cos2",gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),repel = TRUE,axes = c(2, 4))
+```
+
+Nous retrouvons une autre dimension dans laquelle le taux de pauvreté est bien représenté. Les départements situé très à gauche et proche de l'abscisse sont donc des départments avec un haut taux de pauvreté. De plus nous avons confirmation de la corrélation négative entre le taux de pauvreté et le taux d'emploi, ce que nous pouvions déjà observer sur l'axe 1-2.
+
+```{r}
+fviz_pca_ind (res.pca, select.ind = list(cos2 = 30), col.ind = "cos2",gradient.cols = c("#00AFBB","#E7B800", "#FC4E07"),repel = TRUE,axes = c(2,4))
+```
+
+
+
+### Axes 3-4
+
+On représente tout d'abord le cercle des corrélations, ainsi qu'un graphique qui résume les corrélations entre variables et axes principaux :  
+```{r}
+fviz_pca_var(res.pca, select.var = list(cos2 = 0.5), col.var = "cos2",gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),repel = TRUE,axes = c(3, 4))
+```
+
+On ne peut pas faire de conclusion à partir des axes 3-4 car les variables ne sont pas assez bien représentées.
+
+# Régression linéaire multiple : prédiction des disparités de niveau de vie
+
+## Sélection des variables explicatives
+
+On se propose d'établir un modèle linéaire pour les disparités de niveau de vie, mesurées par le rapport interdécile des niveaux de vie. Le niveau de vie correspond au revenu d'un menage divisé par le nombre d'unités de consommation (1 uc pour 1 adulte, 0.5 uc pour un mineur de plus de 14 ans et 0.3 uc pour les autres enfants). On conserve toutes les autres variables pour établir le modèle, exceptées :  
+- transport_travail_autres : la part de personnes qui n'utilisent ni la voiture, ni les transports en commun pour se rendre au travail, qui est linéairement dépendantes de ceux deux variables puisque leur somme est égale à 100 %.
+- tx_energies_renouv_autres, pour la même raison de dépendance linéaire.
+
+Tout d'abord on sélectionne les variables à incorporer au modèle via le critère BIC. On calcule le BIC, qui maximise la vraissemblance tout en pénalisant le nombre de variables explicatives, pour l'ensemble des combinaisons de variables explicatives possibles.
+
+```{r, echo=FALSE}
+don_reg <- don_quanti %>%
+  select(-transport_travail_autres,
+         -tx_energies_renouv_autres)
+
+model_select_esp <- regsubsets(inegalites_niveau_vie ~ .,
+                           intercept = TRUE,
+                           nbest = 1,
+                           nvmax = 19,
+                           method = "exhaustive",
+                           data = don_reg)
+
+plot(model_select_esp, scale = "bic")
+```
+
+On retient le set de variables explicatives qui minimise le critère BIC, à savoir :   
+- tx_pauvrete   
+- tx_jeunes_non_inseres  
+- tx_jeunes_diplomes  
+- transport_travail_voiture   
+- transport_travail_commun  
+- part_economie_solidaire_tertaire  
+- tx_energies_renouv_eolien  
+- tx_pop_couverte_agea_21  
+  
+Vérifions que ces variables explicatives ne sont pas corrélées, car il s'agit d'une des hypothèses pour la régression linéaire. Les autres hypothèses concernant les résidus seront étudiées a posteriori. On présente ci-dessus les 10 corrélations les plus importantes en valeur absolue :  
+
+```{r, echo=FALSE}
+don_quanti %>% select(
+  tx_pauvrete,
+  tx_jeunes_non_inseres,
+  tx_jeunes_diplomes,
+  transport_travail_voiture,
+  transport_travail_commun,
+  part_economie_solidaire_tertaire,
+  tx_energies_renouv_eolien,
+  tx_pop_couverte_agea_21
+) %>%
+  cor() %>%
+  as_tibble() %>%
+  bind_cols( tibble( var1 = colnames( . ) ) ) %>%
+  select( var1, everything() ) %>%
+  gather( key = "var2", value = "correlation", tx_pauvrete:tx_pop_couverte_agea_21) %>%
+  mutate( correlation = round(correlation, 4) ) %>%
+  filter( correlation != 1 ) %>%
+  distinct(correlation, .keep_all = TRUE ) %>%
+  arrange( desc(correlation) ) %>%
+  slice(c(1:5, (nrow(.)-4):nrow(.)) ) %>%
+  kable("html") %>%
+  kable_styling(bootstrap_options = c("condensed", "bordered"), full_width = F )
+```
+
+La part de la population qui se rend au travail en voiture est presque inversement proportionnelle à la part de la population qui se rend au travail en transports en commun. On décide de supprimer une des deux variables du modèle. En se référant au graphique ci-dessus relatif à la sélection de modèle via la minimisation du critère BIC, on s'aperçoit que la variable pour les transports en commun fait moins souvent partie du set de variables "gagnant" que la variable pour la voiture. Pour cette raison, on décide de ne pas incorporer la variable transport_travail_commun au modèle.  
+
+En dehors de cette exception, les corrélations restent raisonnables : on conserve les autres variables.
+
+
+## Construction du modèle de régression linéaire multiple
+  
+On construit maintenant le modèle linéaire.
+
+```{r, echo=FALSE}
+set.seed(42)
+
+lm_ineg <- lm( inegalites_niveau_vie ~ tx_pauvrete + tx_jeunes_non_inseres + tx_jeunes_diplomes + transport_travail_voiture + transport_travail_commun + part_economie_solidaire_tertaire + tx_energies_renouv_eolien + tx_pop_couverte_agea_21, data = don_reg)
+
+obs <- don_reg %>% pull(inegalites_niveau_vie)
+
+pred <- predict.lm(lm_ineg, newdata = don_reg %>% select(-inegalites_niveau_vie) %>% as.data.frame() )
+
+comparaison <- tibble(inegalites_niveau_vie_observees = obs, inegalites_niveau_vie_predites = as.double(pred) )
+
+ecart_moyen <- mean( abs (pred - obs) )
+ecart_type_ineg <- sd(don_reg$inegalites_niveau_vie)
+
+summary(lm_ineg)
+```
+
+Toutes les variables ont un coefficient significativement non-nul au seuil de 5%, ce qui nous laisse penser que la sélection de variables effctuée en amont par le critère BIC a été pertinente. Le R² ajusté est satisfaisant : 0.83. La p-value associée à la statistique de Fisher est négligeable, donc le modèle linéaire est pertinent dans son ensemble, en comparaison à une simple évaluation de la variable expliquée par sa moyenne.  
+  
+L'écart moyen entre la réalité et les prédictions est, en valeur absolue, de `r ecart_moyen`. Là encore, cette valeur est plutôt satisfaisante puisque l'écart-type de la variable régressée (les disparités de niveau de vie) est de `r ecart_type_ineg` années.
+
+## Analyse des résidus
+
+Pour réaliser le modèle linéaire est effectuer des test statistiques de significativité sur les variables, plusieurs hypothèses sont effectuées :   
+- Les variables explicatives sont supposées décorrélées   
+- Les résidus sont supposés d'espérance nulle, de même variance, indépendants.  
+- Pour faire de l'inférence statistique on suppose même que $\epsilon \sim N(0, \sigma * I_{n})$  
+
+La moyenne des résidus est très proche de 0, égale à `r mean(lm_ineg$residuals)`. Cela corrobore l'hypothèse de nullité, en moyenne, des résidus dans le modèle linéaire.   
+  
+Allons plus loin en évaluant la normalité des résidus : $\epsilon \sim N(0, \sigma * I_{n})$. Une façon simple d'évaluer cette hypothèse est de réaliser un diagramme Quantile-Quantile :  
+  
+```{r, echo=FALSE}
+plot(lm_ineg, which=2, main = "Diagramme Quantile-Quantile pour les résidus")
+```
+  
+La normalité semble bien respectée, car dans l'ensemble les points sont très proches de la droite d'équation y=x. Les départements 69, 75 et 76 sont visiblement des points aberrants.  
+  
+Afin de vérifier la normalité, on peut aussi représenter les résidus studentisés par validation croisée. Ces résidus, dont on a vérifié l'espérance nulle, sont normalisés par leur variance empirique. De plus, la variance est estimée par validation croisée, au sens où chaque résidu est normalisé par une variance estimée sans lui. Sous l'hypothèse de normalité, ces résidus suivent une loi de student de paramètre (n-p-1), où n est le nombre d'invidus et p le nombre de variables explicatives. Lorsque n-p-1 est grand (ce qui est le cas ici : n-p-1 = 96-8-1 = 87), cette loi est proche d'une loi normale centrée réduite. On trace donc également les droites d'équations y = 2 et y = -2. Les valeurs -2 et 2 sont usuelles car elles correspondent approximativement aux quantiles à 5% et 95% de la loi normale centrée réduite.
+
+```{r, echo=FALSE}
+plot(rstudent(lm_ineg),
+     pch = ".",
+     xlab = "Département",
+     ylab = "Résidus studentisés par VC",
+     main = "Représentation des résidus studentisés par validation croisée")
+abline(h=c(-2,2))
+lines(lowess(rstudent(lm_ineg)))
+text(x = 69, y = rstudent(lm_ineg)[69], labels = 69)
+text(x = 75, y = rstudent(lm_ineg)[75], labels = 75)
+text(x = 76, y = rstudent(lm_ineg)[76], labels = 76)
+```
+
+Encore une fois, l'hypothèse de normalité semble crédible. Les mêmes individus 69, 75 et 76 apparaissent comme des valeurs aberrantes. On n'a pas de tendance claire qui se dégage de cette représentation et qui remettrait en question l'hypothèse d'homoscédasticité. Cela étant dit, l'ordre dans lequel sont représentés les individus est totalement arbitraire car il s'agit de l'ordre alphabétique des noms des départements. Il est possible qu'un ordre judicieusement choisi mette en exergue une des relations entre les résidus, infirmant l'hypothèse d'indépendance.
+
+## Conclusion
+
+Les hypothèses pour le modèle linéaire sont bien respectées. Le R² ajusté est satisfaisant et les variables ont une importance significative. On peut en déduire que les disparités de niveau de vie sont bien expliquées linéairement par les variables suivantes:
+
+- tx_pauvrete   
+- tx_jeunes_non_inseres  
+- tx_jeunes_diplomes  
+- transport_travail_voiture   
+- transport_travail_commun  
+- part_economie_solidaire_tertaire  
+- tx_energies_renouv_eolien  
+- tx_pop_couverte_agea_21  
+
+Ces variables peuvent donc être utilisées pour faire de la prévision d'inégalités départementales avec une relative fiabilité.

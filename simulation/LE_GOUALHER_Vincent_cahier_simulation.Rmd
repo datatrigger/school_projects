@@ -1,0 +1,365 @@
+---
+title: "Vincent Le Goualher - Cahier de simulation"
+author: "Vincent Le Goualher"
+date: "15/02/2020"
+output:
+  html_document:
+    toc : true
+    number_sections: true
+---
+
+```{r setup, include = FALSE}
+library(knitr)
+library(tidyverse)
+library(ggplot2)
+library(gridExtra)
+opts_chunk$set(echo = TRUE,
+               fig.align = "center",
+               fig.retina = 2,
+               fig.width = 10,
+               cache = FALSE,
+               cache.lazy = FALSE)
+```
+
+# Exercice 1 : loi d'un couple de V.A. sachant que la moyenne du couple est "grande"
+
+Soient $X_{1}$ et $X_{2}$ deux variables aléatoires réelles indépendantes et de même loi. Conditionnellement au fait que la moyenne $\frac{X_{1}+X_{2}}{2}$ soit grande, où a-t-on le plus de chances de trouver le couple $(X_{1}, X_{2})$ dans $\mathbb{R}^{2}$ ? $X_{1}$ et $X_{2}$ sont-elles simultanément grandes ou seulement l'une d'entre elle ?
+
+On s'intéresse donc à la loi de la variable aléatoire dans $\mathbb{R}^{2}$ : $((X_{1}, X_{2})|\frac{X_{1}+X_{2}}{2} > t);t > 0$ , et en particulier lorsque t est grand. Cette question a été traitée dans la partie théorique du présent cahier d'exercices :  
+  
+- Dans le cas où $X_{1}$ et $X_{2}$ suivent une loi normale centrée réduite, on a démontré que conditionnellement à l'événement $\{\frac{X_{1}+X_{2}}{2} > t\}$ pour $t > 0$, la densité du couple $(X_{1}, X_{2})$ est maximale sur la bissectrice d'équation $y=x$, au point de coordonnées $(t,t)$.  
+- Dans le cas où $X_{1}$ et $X_{2}$ suivent une loi de Cauchy de paramètres de position 0 et d'échelle 1, on a démontré que conditionnellement à l'événement $\{\frac{X_{1}+X_{2}}{2} > t\}$ pour $t > 0$, la densité du couple $(X_{1}, X_{2})$ est maximale aux points de coordonnées $(0,2t)$ et $(2t,0)$.  
+
+C'est-à-dire que dans le cas Gaussien, $X_{1}$ et $X_{2}$ ont tendance à être grandes simultanément dès lors que la moyenne est grande. Alors que dans le cas "Cauchy", c'est seulement l'une des deux variables aléatoires qui sera grande, tandis que l'autre sera petite en valeur absolue. Vérifions cela en représentant les lignes de niveau de la densité du couple $(X_{1}, X_{2})$ dans chacun des deux cas considérés.
+
+## Cas où $X_{1}$ et $X_{2}$ suivent la loi normale centrée réduite
+
+```{r}
+# Densité de probabilité gaussienne dans R^2
+gaussian_density <- function(x,y){
+  return( exp( -0.5 * ( x^2 + y^2 ) ) / (2*pi) )
+}
+
+# On génère une grille d coordonnées (x,y), ainsi que la densité associée
+x = seq(-3,3,0.01)
+y = seq(-3,3,0.01)
+don_gauss <- expand_grid(x, y) %>%
+  mutate( gauss_density = gaussian_density(x,y))
+
+# Représentation graphique
+ggplot( data = don_gauss ) +
+  aes( x = x, y = y, z = gauss_density ) +
+  geom_raster( aes( fill = gauss_density ) ) +
+  geom_contour( colour = "white" ) +
+  coord_fixed( ratio = 1 ) +
+  theme_minimal() +
+  ggtitle("Lignes de niveau de la densité d'un couple de V.A. gaussiennes centrées réduites") +
+  theme( plot.title = element_text(hjust = 0.5) )
+```
+
+## Cas où $X_{1}$ et $X_{2}$ suivent la loi de Cauchy.
+
+```{r}
+cauchy_density <- function(x,y){
+  return( 1 / ( pi^2 * (1+x^2) * (1+y^2) ) )
+}
+
+# On génère une grille d coordonnées (x,y), ainsi que la densité associée
+x = seq(-3.5,3.5,0.01)
+y = seq(-3.5,3.5,0.01)
+don_cauchy <- expand_grid(x, y) %>%
+  mutate( cauchy_density = cauchy_density(x,y))
+
+# Représentation graphique
+ggplot( data = don_cauchy ) +
+  aes( x = x, y = y, z = cauchy_density ) +
+  geom_raster( aes( fill = cauchy_density ) ) +
+  geom_contour( colour = "white" ) +
+  coord_fixed( ratio = 1 ) +
+  theme_minimal() +
+  ggtitle("Lignes de niveau de la densité d'un couple de V.A. de Cauchy") +
+  theme( plot.title = element_text(hjust = 0.5) )
+```
+
+## Conclusion
+
+Les lignes de niveau représentées ci-dessus corroborent les résultats théoriques. Conditionnellement à l'événement $\{\frac{X_{1}+X_{2}}{2} > t\}$ pour $t > 0$, c'est-à-dire sachant l'appartenance du couple $(X_{1}, X_{2})$ au domaine $D_{t}$ associé, la densité est maximale au point de coordonnées (t,t) dans le cas gaussien, et aux points de coordonnées (0,2t) / (2t,0) dans le cas "Cauchy".
+
+# Exercice 2 : valeurs extrêmes d'un échantillon gaussien / de Cauchy
+
+Considérons un échantillon de variables aléatoires indépendantes et identiquement distribuées. Supposons que l'échantillon suive une loi normale ou une loi de Cauchy. Alors il est difficile de déterminer la loi de l'échantillon sur un compact, il faut des valeurs extrêmes pour trancher.  
+  
+On se propose de simuler deux échantillons suivant une loi normale centrée réduite pour l'un, et une loi de Cauchy de paramètres de position 0 et d'échelle 1 pour l'autre. Pour être certain sûr d'obtenir un comportement fidèle concernant les événements rares (valeurs extrêmes), on procède à l'implémentation des simulations par la méthode du rejet et de l'inverse de Lévy de la fonction de répartition. L'objectif est d'étudier le comportement des valeurs extrêmes de chacun des échantillons.  
+
+## Simulation d'une loi normale par la méthode du rejet
+
+Soit $f$ la densité de la loi normale centrée réduite et $g$ la densité de la loi de Laplace de paramètre de position 0 et de paramètre d'échelle 1. On montre que
+$ \inf \{c \in \mathbb{R} | \forall x \in \mathbb{R}, f(x) \leq cg(x) \} = \sqrt{\frac{2e}{\pi}} $. On peut maintenant déployer la méthode du rejet : on tire Y de densité g, on tire U de loi uniforme sur $[0;1]$, si $U \leq \frac{f(Y)}{cg(Y)}$ on accepte Y comme tirage de densité f, sinon on recommence.
+
+On implémente la méthode du rejet ci-dessous, et on vérifie graphiquement que la méthode fonctionne en comparant l'histogramme de 1 000 000 de valeurs avec la densité théorique de la loi normale centrée réduite.
+
+```{r, warning=FALSE, message=FALSE}
+# Import du package qui contient dlaplace(), la densité de la loi de Laplace de paramètre de position 0 et de paramètre d'échelle 1
+library(rmutil)
+# La constante c de la méthode du rejet explicitée ci-dessus
+c<-sqrt( ( 2 * exp(1) ) / pi )
+
+# Implémentation de la fonction echantillon_normal(n) qui génère un échantillon de n valeurs issue d'une V.A normale centrée réduite
+echantillon_normal <- function(n){
+  
+  values <- vector("double", n)
+  
+  for( i in 1:n ){
+    y <- rlaplace(1) # Valeur tirée d'une V.A Laplace
+    u <- runif(1) # Valeur tirée d'une V.A uniforme sur [0;1]
+    while( c * u * dlaplace(y) > dnorm(y) ){
+      y <- rlaplace(1)
+      u <- runif(1)
+    }
+    values[i] <- y
+  }
+  return(values)
+}
+
+# Représentation d'un échantillon normal taille 1 000 000
+set.seed(42)
+test_normal <- tibble( echantillon = echantillon_normal(1000000))
+
+ggplot( data = test_normal ) +
+  geom_histogram( aes( x = echantillon, stat(density)), binwidth = 0.01, colour = "black" ) +
+  stat_function( fun = dnorm, args = list( mean = 0,  sd = 1 ), colour = "red", size = 0.7 ) +
+  theme_minimal() +
+  ggtitle("Histogrammes de 1 000 000 valeurs simulées par la méthode du rejet / densité de la loi normale") +
+  theme( plot.title = element_text(hjust = 0.5) )
+```
+
+## Simulation d'une loi de Cauchy via l'inverse de Lévy de la fonction de répartition
+
+Cette méthode s'appuie sur le fait que si la loi d'une variable aléatoire $X$ est caractérisée par une certaine fonction de répartition $F$, alors la variable aléatoire $F^{-1}(U)$ a la même loi que $X$, où $F^{-1}$ est l'inverse de Lévy de la fonction $F$ (i.e sa réciproque lorsqu'elle existe) et U une variable aléatoire de loi uniforme sur $[0;1]$. Dans le cas où X suit une loi de Cauchy "standard", $F^{-1}(U) = tan[\pi(U-\frac{1}{2})]$. À nouveau on vérifie graphiquement que la simulation fonctionne.
+
+```{r}
+# La fonction ci-dessous renvoie n valeurs d'une variable aléatoire de loi de Cauchy,
+# via la méthode de l'inverse de Lévy de la fonction de répartition associée
+echantillon_cauchy <- function(n){
+  u <- runif(n)
+  return( tan( pi * ( u - 0.5 ) ) )
+}
+
+# On génère 1 000 000 de valeurs
+set.seed(42)
+test_cauchy <- tibble( echantillon = echantillon_cauchy(100000))
+
+ggplot( data = test_cauchy %>% filter(echantillon < 10 & echantillon > -10)) +
+  geom_histogram( aes( x = echantillon, stat(density)), binwidth = 0.05, colour = "black" ) +
+  stat_function( fun = dcauchy, args = list( location = 0,  scale = 1 ), colour = "red", size = 0.7 ) +
+  theme_minimal() +
+  ggtitle("Histogrammes de 100 000 valeurs simulées par inversion de la fonction de répartition / densité de la loi de Cauchy") +
+  theme( plot.title = element_text(hjust = 0.5) )
+```
+
+## Représentation du maximum de l'échantillon en fonction de sa taille
+
+### Première simulation
+
+```{r}
+set.seed(42)
+
+n <- 1000000
+
+# Calcul de l'écart maximal au fur et à mesure que l'échantillon grandit
+don_max <- tibble(
+  normal = echantillon_normal(n),
+  cauchy = echantillon_cauchy(n)
+) %>%
+  mutate(
+    normal_max = cummax(normal),
+    cauchy_max = cummax(cauchy),
+    normal_min = cummin(normal),
+    cauchy_min = cummin(cauchy),
+    normal_ecart = normal_max - normal_min,
+    cauchy_ecart = cauchy_max - cauchy_min
+  ) %>%
+  select(
+    normal_ecart,
+    cauchy_ecart
+  )
+
+# Représentation graphique
+plots = vector("list", 2)
+
+plots[[1]] <- ggplot(data = don_max) +
+  aes( x = 1:n, y = normal_ecart) +
+  geom_line() +
+  xlab("Taille de l'échantillon") +
+  ylab("Écart maximal") +
+  theme_minimal() +
+  ggtitle("Écart maximal suivant la taille de l'échantillon - Gauss") +
+  theme( plot.title = element_text(hjust = 0.5) )
+
+plots[[2]] <- ggplot(data = don_max) +
+  aes( x = 1:n, y = cauchy_ecart) +
+  geom_line() +
+  xlab("Taille de l'échantillon") +
+  ylab("Écart maximal") +
+  theme_minimal() +
+  ggtitle("Écart maximal suivant la taille de l'échantillon - Cauchy") +
+  theme( plot.title = element_text(hjust = 0.5) )
+
+gridExtra::grid.arrange( grobs = plots, ncol = 2 )
+```
+
+### Deuxième simulation
+
+```{r}
+n <- 1000000
+
+don_max <- tibble(
+  normal = echantillon_normal(n),
+  cauchy = echantillon_cauchy(n)
+) %>%
+  mutate(
+    normal_max = cummax(normal),
+    cauchy_max = cummax(cauchy),
+    normal_min = cummin(normal),
+    cauchy_min = cummin(cauchy),
+    normal_ecart = normal_max - normal_min,
+    cauchy_ecart = cauchy_max - cauchy_min
+  ) %>%
+  select(
+    normal_ecart,
+    cauchy_ecart
+  )
+
+plots = vector("list", 2)
+
+plots[[1]] <- ggplot(data = don_max) +
+  aes( x = 1:n, y = normal_ecart) +
+  geom_line() +
+  xlab("Taille de l'échantillon") +
+  ylab("Écart maximal") +
+  theme_minimal() +
+  ggtitle("Écart maximal suivant la taille de l'échantillon - Gauss") +
+  theme( plot.title = element_text(hjust = 0.5) )
+
+plots[[2]] <- ggplot(data = don_max) +
+  aes( x = 1:n, y = cauchy_ecart) +
+  geom_line() +
+  xlab("Taille de l'échantillon") +
+  ylab("Écart maximal") +
+  theme_minimal() +
+  ggtitle("Écart maximal suivant la taille de l'échantillon - Cauchy") +
+  theme( plot.title = element_text(hjust = 0.5) )
+
+gridExtra::grid.arrange( grobs = plots, ncol = 2 )
+```
+
+On constate que l'écart maximal d'un échantillon de Cauchy devient très rapidement important, et arbitrairement élevé au fur et à mesure que l'échantillon augmente. En revanche, l'écart maximal d'un échantillon normal reste très faible comparé à une loi de Cauchy ; de plus il se stabilise "rapidement".
+
+# Exercice 3 : Test de Wilcoxon, normalité de la statistique W
+
+Le test des rangs appariés de Wilcoxon teste l'hypothèse nulle $H_{0}$ : "Les variables X et Y ont la même loi". On cherche à évaluer la normalité de la statistique du test de Wilcoxon, notée W. Dans cette perspective, on simule deux échantillons indépendants et identiquement distribués $(X_{1}, ..., X_{n})$ et $(Y_{1}, ..., Y_{n})$ pour $n \in \mathbb{N}$. La statistique W est la somme des rangs de $X$ pris dans $X \cup Y$. Pour cette raison, on se limite au cas $X,Y \sim U[0;1]$ puisque pour une fonction de répartition données $F$ et son inverse de Lévy $F^{-1}$, des échantillons associés à $U$ ou à $F^{-1}(U)$ ont rigoureusement les mêmes rangs car $F^{-1}$ est croissante.  
+  
+On considère les cas $n=5$, $n=7$, $n=10$ et $n=20$. Pour chaque valeur n, on simule N = 10 000 échantillons et on calcule la statistique W afin de représenter sa distribution.
+
+```{r}
+N <- 10000
+
+stat_wilcoxon <- function(n){
+  
+  # Le vecteur W contient les N valeurs de la statistique de Wilcoxon associées au N échantillons simulés
+  W <- rep(0, N)
+  for( i in 1:N ){
+    U <- runif(n)
+    V <- runif(n)
+    Z <- c(U,V)
+    U <- sort(U)
+    Z <- sort(Z)
+    for ( j in 1:n ){
+      for ( k in 1:(2*n) ){
+        if ( U[j] == Z[k] ){
+          W[i] = W[i] + k
+        }
+      }
+    }
+  }
+  return(W)
+}
+
+# Représentation graphique
+set.seed(1000)
+plots <- vector("list", 4)
+don <- vector("list",4)
+n <- c(5,7,10,20)
+for( i in 1:4 ){
+  don[[i]] <- tibble( w = stat_wilcoxon(n[i]) )
+  m <- mean(don[[i]]$w)
+  s <- sd(don[[i]]$w)
+  plots[[i]] <- ggplot(data = don[[i]]) +
+    geom_histogram( aes( x = w, stat(density)), binwidth = 1, colour = "black" ) +
+    stat_function( fun = dnorm, args = list( mean = m,  sd = s ), colour = "red", size = 1 ) +
+    theme_minimal() +
+    ggtitle(str_c("Distribution de la statistique W / n = ", n[i] ) ) +
+    theme( plot.title = element_text(hjust = 0.5) )
+}
+
+gridExtra::grid.arrange( grobs = plots, ncol = 2 )
+```
+
+Sous $H_{0}:$ "X et Y ont la même distribution", la statistique W semble suivre une loi normale, quelle que soit la valeur de n. On effectue un test de Shapiro-Wilk pour $n \in \{5;7;10;20\}$, sur les données simulées ci-dessus :  
+
+```{r}
+for(i in 1:4){
+  print( str_c("cas n = ", n[i]) )
+  print( shapiro.test( sample(don[[i]]$w, 5000) ) )
+}
+```
+
+On observe que la p-value associée au test de Shapiro-Wilk croît fortement avec n, la taille de chacun des échantillons appariés. L'hypothèse de normalité est rejetée pour les faibles valeurs de n, même si on peut noter que l'histogramme est proche d'une distribution normale. On accepte l'hypothèse de normalité via la statistique de Shapiro-Wilk seulement dans le cas n = 20.
+
+# Exercice 4
+
+Soient $X$ et $X'$ deux variables aléatoires réelles et $\epsilon$ une variable aléatoire de Rademacher. Nous avons démontré (cf cahier théorique, exercice 8) que :  
+- Si $\epsilon$ et $X$ sont indépendantes, alors $\epsilon X$ est symétrique  
+- Si $X$ et $X'$ sont indépendantes et de même loi, alors $X-X'$ est symétrique  
+
+On simule deux variables aléatoires $X, X'$ suivant une loi exponentielle de paramètre 1 ainsi qu'une variable de Rademacher $\epsilon$, et on représente ci-dessous l'histogramme $\epsilon X$ et de $X-X'$ :  
+
+```{r}
+rademacher <- function(n){
+  epsilon <- 0
+  list_epsilon <- vector("double", n)
+  for(i in 1:n){
+    u <- runif(1)
+    if( u <= 0.5 ){
+      epsilon <- -1
+    }
+    else{
+      epsilon <- 1
+    }
+    list_epsilon[i] <- epsilon
+  }
+  return(list_epsilon)
+}
+
+set.seed(42)
+n <- 10000
+don <- tibble( exp1 = rexp(n), exp2 = rexp(n), rademacher = rademacher(n), prod = exp1*rademacher, diff = exp1-exp2 )
+plots <- vector("list", 2)
+
+plots[[1]] <- ggplot( data = don ) +
+  geom_histogram( aes( x = prod, stat(density) ), binwidth = 0.1, colour = "black" ) +
+  theme_minimal() +
+  ggtitle("Histogramme de la V.A. \u03B5 X") +
+  theme( plot.title = element_text(hjust = 0.5) )
+
+plots[[2]] <- ggplot( data = don ) +
+  geom_histogram( aes( x = diff, stat(density) ), binwidth = 0.1, colour = "black" ) +
+  theme_minimal() +
+  ggtitle("Histogramme de la V.A. X - X'") +
+  theme( plot.title = element_text(hjust = 0.5) )
+
+gridExtra::grid.arrange( grobs = plots, ncol = 2 )
+```
+
+On constate empiriquement que les deux V.A. considérées sont bien symétriques.
+
