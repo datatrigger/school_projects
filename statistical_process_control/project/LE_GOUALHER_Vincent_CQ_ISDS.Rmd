@@ -1,0 +1,749 @@
+---
+title: "LE GOUALHER Vincent - CQ - Projet"
+author: "Vincent Le Goualher"
+date: "15/12/2019"
+output:
+  html_document:
+    toc : true
+    number_sections: true
+---
+
+```{r setup, include = FALSE}
+library(knitr)
+library(tidyverse)
+library(ggplot2)
+library(gridExtra)
+library(nortest)
+library(mlbench)
+data(Ozone)
+library(Hmisc)
+library(GGally)
+opts_chunk$set(echo = TRUE,
+               fig.align = "center",
+               fig.retina = 2,
+               fig.width = 10,
+               cache = FALSE,
+               cache.lazy = FALSE)
+```
+
+# Détermination de la loi des données / Tests d'adéquation
+
+## Histogrammes
+
+Tout d'abord, importons les données et représentons un histogramme de chaque colonne V1 à V6 :
+
+```{r}
+# Import des données brutes
+don <- read.csv( file = "Qualite-LE GOUALHER.csv" ) %>% as_tibble() %>% select(-1)
+
+don_test <- don %>% rename(V1 = `Date`) %>% select(V1:V6)
+
+# Représentation des distributions associées aux colonnes V1 à V6 :
+plots = vector("list", 6)
+bins = c( 300, 10, 10, 2, 300, 300 )
+name_col <- str_c( "V", 1:6 )
+for(i in 1:6)
+{
+  plots[[i]] <- ggplot( data = don_test, mapping = aes_string( x = name_col[i] ) ) +
+    geom_histogram( mapping = aes(y = ..density..), binwidth = bins[i], color = "blue" ) +
+    geom_density( mapping = aes(y = ..density..), size = 1.2, color = "black" ) +
+    theme_minimal()
+}
+gridExtra::grid.arrange( grobs = plots, ncol = 3 ,top = "Histogrammes pour les colonnes V1 à V6" )
+```
+
+* <span style="color:blue">La distribution V1</span> semble asymétrique. Le profil de sa distribution fait penser à une loi Gamma.
+* <span style="color:green">La distribution V2</span> paraît symétrique et sa distribution semble plus proche d'une gaussienne. Néanmoins, l'histogramme fait apparaître un "plateau" autour de sa moyenne.
+* <span style="color:green">La distribution V3</span> est celle qui semble la plus proche d'une loi normale, malgré une légère asymétrie.
+* <span style="color:green">La distribution V4</span> semble être un mélange entre deux lois gaussiennes. En effet l'histogramme fait apparaître deux "modes" concurrents, avec un creux de densité autour de la médiane.
+* <span style="color:blue">La distribution V5</span> fait, comme V1, penser à une loi Gamma.
+* <span style="color:red">La distribution V6</span> a le profil d'une loi exponentielle.
+
+## Normalité des données
+
+Testons la normalité des données en gardant à l'esprit la première analyse ci-dessus.
+
+### Q-Q plots
+
+```{r}
+don_test_gathered <- don_test %>% gather(V, value, V1:V6)
+
+qqplots <- ggplot(data = don_test_gathered, aes(sample = value)) +
+  theme_minimal() +
+  stat_qq() +
+  stat_qq_line() +
+  ggtitle("Q-Q Plot des données") +
+  theme( plot.title = element_text(hjust = 0.5) ) +
+  facet_wrap(~V)
+
+plot(qqplots)
+```
+
+Les Q-Q plots confirment les premières analyses basées sur les histogrammes : les quantiles des distributions <span style="color:green">V2, V3 et V4</span> sont bien ajustés à ceux d'une loi normale. Ce n'est pas le cas pour les distributions <span style="color:blue">V1, V5</span> et <span style="color:red">V6</span>.
+
+### Tests de Shapiro-Wilk
+
+On donnes les p-values résultant du test de Shapiro-Wilk pour chaque variable :
+
+```{r}
+don_test_gathered %>% group_by(V) %>% summarise( p_value = str_c (100 * round( shapiro.test(value)$p.value, 2), " %" ) ) %>% kable()
+```
+
+Les résultats sont cohérents avec l'analyse des histogrammes et des Q-Q plots.  
+* L'hypothèse de normalité est acceptée pour les variables <span style="color:green">V2, V3 et V4</span>. Les p-values associées sont correctes, mais elles ne sont pas extrêmement proches de 1. Cela appuie les bémols qui ont été exprimés plus haut quant à la normalité des ces variables : présence d'un plateau (V2), d'une légère asymétrie (V3) et d'un mélange probable de lois gaussiennes (V3).  
+* L'hypothèse de normalité est rejetée pour les variables <span style="color:blue">V1, V5</span> et <span style="color:red">V6</span>.
+
+## Tests d'adéquation de Kolmogorov - Smirnov.
+
+### Cas normal : test de Lilliefors pour les variables <span style="color:green">V2, V3 et V4</span>
+
+On donne les p values associées aux tests de Lilliefors pour les variables qu'on suppose normalement distribuées d'après ce qui précède :  
+
+```{r}
+don_test_gathered %>% filter(V %in% str_c("V", 2:4) ) %>%group_by(V) %>% summarise( p_value = str_c (100 * round( lillie.test(value)$p.value, 2), " %" ) ) %>% kable()
+```
+
+Le test de Lilliefors, qui est un sous-cas du test de Kolmogorov-Smirnov adapté au cas normal, confirme à nouveau la normalité des variables <span style="color:green">V2, V3 et V4</span>.
+
+### Variables <span style="color:blue">V1, V5</span> et <span style="color:red">V6</span>
+
+* <span style="color:blue">V1</span>
+
+On estime d'abord les paramètres shape a / scale s via la méthode des moments. On procède ensuite au test d'adéquation de Kolmogorov - Smirnov.  
+Ici l'hypothèse nulle est H0 : l'échantillon suit une loi Gamma.
+
+```{r}
+v1 <- don_test %>% pull(V1)
+
+# Estimation de la moyenne et de la variance
+mu_hat <- v1 %>% mean()
+sigma2_hat <- v1 %>% var()
+
+# Estimation des paramètres dans le cas où l'échantillon suivrait une loi Gamma
+shape = mu_hat^2 / sigma2_hat
+scale = sigma2_hat / mu_hat
+
+# Test de Kolmogorov-Smirnov
+ks.test(v1, "pgamma", shape = shape, scale = scale)
+```
+
+La p value est égale à `r round(ks.test(v1, "pgamma", shape = shape, scale = scale)$p.value, 2)` : on accepte l'hypothèse nulle au seuil de 5%, selon laquelle l'échantillon considéré suit une loi Gamma de paramètres shape a = `r round(shape, 2)`, scale s = `r round(scale, 2)`. La p-value n'est cependant pas très élevée, et cette conclusion doit être acceptée avec une certaine réserve.
+
+* <span style="color:blue">V5</span>
+
+On estime d'abord les paramètres shape a / scale s via la méthode des moments. On procède ensuite au test d'adéquation de Kolmogorov - Smirnov.  
+Ici l'hypothèse nulle est H0 : l'échantillon suit une loi Gamma.
+
+```{r}
+v5 <- don_test %>% pull(V5)
+mu_hat <- v5 %>% mean()
+sigma2_hat <- v5 %>% var()
+
+shape = mu_hat^2 / sigma2_hat
+scale = sigma2_hat / mu_hat
+
+ks.test(v5, "pgamma", shape = shape, scale = scale)
+```
+
+Le test rejette l'hypothèse nulle avec une p value égale à `r round(ks.test(v5, "pgamma", shape = shape, scale = scale)$p.value, 3)`. Compte-tenu de ce résultat, et en regardant à nouveau l'histogramme de V5, on suspecte finalement une loi log-normale. Effectuons un nouveau test de Kolmogorov-Smirnov :
+
+```{r}
+sigma_hat <- v5 %>% sd()
+meanlog <- log( mu_hat^2 / sqrt( sigma_hat^2 + mu_hat^2 ) )
+sdlog <- sqrt( log( 1 + ( sigma_hat^2 / mu_hat^2 ) ) )
+
+ks.test(v5, "plnorm", meanlog = meanlog, sdlog = sdlog)
+```
+
+On accepte l'hypothèse nulle selon laquelle <span style="color:orange">V5 suit une loi log-normale</span>, avec une p value satisfaisante `r round(ks.test(v5, "plnorm", meanlog = meanlog, sdlog = sdlog)$p.value, 2)`.
+
+* <span style="color:red">V6</span>
+
+On estime d'abord le paramètre $\lambda$ via la méthode des moments. On procède ensuite au test d'adéquation de Kolmogorov - Smirnov.  
+Ici l'hypothèse nulle est H0 : l'échantillon suit une loi exponentielle de paramètre $\lambda$.
+
+```{r}
+v6 <- don_test %>% pull(V6)
+mu_hat <- v6 %>% mean()
+
+lambda = 1 / mu_hat
+
+ks.test(v6, "pexp", rate = lambda)
+```
+
+On accepte l'hypothèse nulle avec une p value égale à `r round(ks.test(v6, "pexp", rate = lambda)$p.value, 2)`.
+
+
+# Cartes de contrôle <SPAN STYLE="text-decoration:overline">X</SPAN>, R / <SPAN STYLE="text-decoration:overline">X</SPAN>, S
+
+On travaille désormais sur les 100 colonnes V7 à V106. Testons d'abord la normalité des données. On effectue un test de Shapiro-Wilk sur les 3 premières colonnes de données (3 00 individus):  
+
+```{r}
+# Sélection des variables pour les cartes de contrôle
+don_charts <- don %>% select(V7:V106)
+
+don_charts %>% select(V7:V9) %>% gather(Vi, value, V7:V9) %>% pull(value) %>% shapiro.test
+```
+
+On **accepte la normalité** des données avec une p-value = 0.905 satisfaisante. Nous pouvons donc réaliser les cartes de contrôles demandées.  
+On calcule les valeurs contrôlées (moyenne **<SPAN STYLE="text-decoration:overline">X</SPAN>**, étendue **R**, écart-type **S**) pour chacun des 100 sous-échantillons.  
+Des valeurs de **consigne** sont également nécessaires. Pour cela on suppose que le processus est sous contrôle au début des mesures, et on se base sur les 2 premiers sous-échantillons, soit 2 000 pièces, pour calculer $\overline{\overline{X}}$, $\overline{R}$ et $\overline{S}$. Ces quantités font ici office de consigne.
+
+```{r}
+# Calcul de la moyenne / étendue / écart-type pour chacun des 100 sous-échantillons :
+
+means <- don_charts %>% summarise_all( .funs = mean ) %>% as.double()
+ranges <- don_charts %>% summarise_all( .funs = ~diff(range(.)) ) %>% as.double()
+standard_deviations <- don_charts %>% summarise_all( .funs = sd ) %>% as.double()
+don_aggregated <- tibble( mean = means, range = ranges, standard_deviation = standard_deviations)
+
+# Calcul de la moyenne des moyennes / étendues / écart-types
+xbb <- mean(means[1:2])
+rb <- mean(ranges[1:2])
+sb <- mean(standard_deviations[1:2])
+```
+
+Nous sommes maintenant en mesure de calculer les limites de contrôle dites LCL et UCL pour chaque carte.  
+
+* Carte <SPAN STYLE="text-decoration:overline">X</SPAN> avec R :  
+  $UCL = \overline{\overline{X}} + A_{2}R$  
+  $Consigne = \overline{\overline{X}}$  
+  $LCL = \overline{\overline{X}} - A_{2}R$    
+        
+* Carte R :  
+  $UCL = D_{4}R$  
+  $Consigne = \overline{R}$  
+  $LCL = D_{3}R$    
+        
+* Carte <SPAN STYLE="text-decoration:overline">X</SPAN> avec S :  
+  $UCL = \overline{\overline{X}} + A_{3}S$  
+  $Consigne = \overline{\overline{X}}$  
+  $LCL = \overline{\overline{X}} - A_{3}S$    
+        
+* Carte S :  
+  $UCL = B_{4}S$  
+  $Consigne = \overline{S}$  
+  $LCL = B_{3}S$  
+        
+La taille des sous-échantillons est importante (n = 1000) et on ne trouve pas les différents coefficients nécessaires pour le calcul des limites de contrôle dans les tables. On se base donc sur le livre "Introduction to Statistical Quality Control" de Douglas C. Montgomery, qui permet de calculer la plupart des coefficients pour n'importe quelle taille d'échantillon n. Pour pallier l'absence de certains coefficients (d2 et d3), on fait aussi appel au package R "SixSigma".
+
+```{r}
+# Coefficients nécessaires pour la construction des cartes
+# Source : "Introduction to Statistical Quality Control", Douglas C. Montgomery
+# Source pour les coefficients d2 et d3 : package SixSIgma
+n <- nrow(don_charts)
+
+library(SixSigma)
+d2 <- ss.cc.getd2(n = n)
+d3 <- ss.cc.getd3(n = n)
+
+a2 <- 3 / ( d2 * sqrt(n) )
+c4 <- 4 * (n-1) / (4*n - 3)
+a3 <- 3 / (c4 * sqrt(n) )
+
+b3 <- 1 - ( 3 / ( c4 * sqrt( 2 * (n-1) ) ) )
+b4 <- 1 + ( 3 / ( c4 * sqrt( 2 * (n-1) ) ) )
+
+d3 <- 1 - ( 3 * d3 / d2 )
+d4 <- 1 + ( 3 * d3 / d2 )
+
+# Calcul des LCL/UCL
+
+lcl_xbr <- xbb - a2 * rb
+ucl_xbr <- xbb + a2 * rb
+lcl_r <- d3 * rb
+ucl_r <- d4 * rb
+lcl_xbs <- xbb - a3 * sb
+ucl_xbs <- xbb + a3 * sb
+lcl_s <- b3 * sb
+ucl_s <- b4 * sb
+```
+
+## Carte <SPAN STYLE="text-decoration:overline">X</SPAN>, R
+
+```{r}
+nombre_observation <- nrow(don_aggregated)
+
+# Moyenne ----
+plotxr = vector("list", 2)
+
+plotxr[[1]] <- ggplot(data = don_aggregated ) +
+  aes( x = 1:nombre_observation, y = mean) +
+  geom_line() +
+  geom_hline(yintercept = xbb, color = "chartreuse4", size = 1.3 ) +
+  geom_hline(yintercept = lcl_xbr, color = "red", size = 1) +
+  geom_hline(yintercept = ucl_xbr, color = "red", size = 1)+
+  xlab("Échantillon") +
+  scale_x_continuous( breaks = seq( 0, 100, 5 ) ) +
+  ylab("Moyenne") +
+  theme_minimal() +
+  ggtitle("Contrôle de la moyenne X\u0305") +
+  theme( plot.title = element_text(hjust = 0.5) )
+
+plotxr[[2]] <- ggplot(data = don_aggregated ) +
+  aes( x = 1:nombre_observation, y = mean) +
+  geom_line() +
+  geom_hline(yintercept = xbb, color = "chartreuse4", size = 1.3 ) +
+  geom_hline(yintercept = lcl_xbr, color = "red", size = 1) +
+  geom_hline(yintercept = ucl_xbr, color = "red", size = 1)+
+  geom_text(x = 50, y = xbb + 0.01, label = "Consigne", color = "chartreuse4") +
+  geom_text(x = 70, y = lcl_xbr + 0.01, label = "LCL", color = "red") +
+  geom_text(x = 70, y = ucl_xbr - 0.01, label = "UCL", color = "red") +
+  xlab("Échantillon") +
+  scale_x_continuous( breaks = seq( 0, 100, 5 ) ) +
+  coord_cartesian( ylim = c(1.9, 2.1) ) +
+  ylab("Moyenne") +
+  theme_minimal() +
+  ggtitle("Contrôle de la moyenne X\u0305 - Zoom") +
+  theme( plot.title = element_text(hjust = 0.5) )
+
+gridExtra::grid.arrange( grobs = plotxr, ncol = 2 )
+
+# Étendue ----
+plotr = vector("list", 2)
+
+plotr[[1]] <- ggplot( data = don_aggregated ) +
+  aes( x = 1:nombre_observation, y = range) +
+  geom_line() +
+  geom_hline(yintercept = rb, color = "chartreuse4", size = 1.3 ) +
+  geom_hline(yintercept = lcl_r, color = "red", size = 1) +
+  geom_hline(yintercept = ucl_r, color = "red", size = 1)+
+  xlab("Échantillon") +
+  scale_x_continuous( breaks = seq( 0, 100, 5 ) ) +
+  ylab("Étendue") +
+  theme_minimal() +
+  ggtitle("Contrôle de l'étendue R") +
+  theme( plot.title = element_text(hjust = 0.5) )
+
+plotr[[2]] <- ggplot( data = don_aggregated ) +
+  aes( x = 1:nombre_observation, y = range) +
+  geom_line() +
+  geom_hline(yintercept = rb, color = "chartreuse4", size = 1.3 ) +
+  geom_hline(yintercept = lcl_r, color = "red", size = 1) +
+  geom_hline(yintercept = ucl_r, color = "red", size = 1)+
+  geom_text(x = 50, y = rb + 0.2, label = "Consigne", color = "chartreuse4") +
+  geom_text(x = 70, y = lcl_r - 0.2, label = "LCL", color = "red") +
+  geom_text(x = 70, y = ucl_r + 0.2, label = "UCL", color = "red") +
+  xlab("Échantillon") +
+  scale_x_continuous( breaks = seq( 0, 100, 5 ) ) +
+  coord_cartesian( ylim = c(2, 5) ) +
+  ylab("Étendue") +
+  theme_minimal() +
+  ggtitle("Contrôle de l'étendue R - Zoom") +
+  theme( plot.title = element_text(hjust = 0.5) )
+
+gridExtra::grid.arrange( grobs = plotr, ncol = 2 )
+```
+
+## Carte <SPAN STYLE="text-decoration:overline">X</SPAN>, S
+
+```{r}
+# Moyenne ----
+plotxs = vector("list", 2)
+
+plotxs[[1]] <- ggplot(data = don_aggregated ) +
+  aes( x = 1:nombre_observation, y = mean) +
+  geom_line() +
+  geom_hline(yintercept = xbb, color = "chartreuse4", size = 1.3 ) +
+  geom_hline(yintercept = lcl_xbs, color = "red", size = 1) +
+  geom_hline(yintercept = ucl_xbs, color = "red", size = 1)+
+  xlab("Échantillon") +
+  scale_x_continuous( breaks = seq( 0, 100, 5 ) ) +
+  ylab("Moyenne") +
+  theme_minimal() +
+  ggtitle("Contrôle de la moyenne X\u0305") +
+  theme( plot.title = element_text(hjust = 0.5) )
+
+plotxs[[2]] <- ggplot(data = don_aggregated ) +
+  aes( x = 1:nombre_observation, y = mean) +
+  geom_line() +
+  geom_hline(yintercept = xbb, color = "chartreuse4", size = 1.3 ) +
+  geom_hline(yintercept = lcl_xbs, color = "red", size = 1) +
+  geom_hline(yintercept = ucl_xbs, color = "red", size = 1)+
+  geom_text(x = 50, y = xbb + 0.01, label = "Consigne", color = "chartreuse4") +
+  geom_text(x = 70, y = lcl_xbs + 0.01, label = "LCL", color = "red") +
+  geom_text(x = 70, y = ucl_xbs - 0.01, label = "UCL", color = "red") +
+  xlab("Échantillon") +
+  scale_x_continuous( breaks = seq( 0, 100, 5 ) ) +
+  coord_cartesian( ylim = c(1.9, 2.1) ) +
+  ylab("Moyenne") +
+  theme_minimal() +
+  ggtitle("Contrôle de la moyenne X\u0305 - Zoom") +
+  theme( plot.title = element_text(hjust = 0.5) )
+
+gridExtra::grid.arrange( grobs = plotxs, ncol = 2 )
+
+# Écart-type ----
+plots = vector("list", 2)
+
+plots[[1]] <- ggplot( data = don_aggregated ) +
+  aes( x = 1:nombre_observation, y = standard_deviations) +
+  geom_line() +
+  geom_hline(yintercept = sb, color = "chartreuse4", size = 1.3 ) +
+  geom_hline(yintercept = lcl_s, color = "red", size = 1) +
+  geom_hline(yintercept = ucl_s, color = "red", size = 1)+
+  xlab("Échantillon") +
+  scale_x_continuous( breaks = seq( 0, 100, 5 ) ) +
+  ylab("Écart-type") +
+  theme_minimal() +
+  ggtitle("Contrôle de l'écart-type S") +
+  theme( plot.title = element_text(hjust = 0.5) )
+
+plots[[2]] <- ggplot( data = don_aggregated ) +
+  aes( x = 1:nombre_observation, y = standard_deviations) +
+  geom_line() +
+  geom_hline(yintercept = sb, color = "chartreuse4", size = 1.3 ) +
+  geom_hline(yintercept = lcl_s, color = "red", size = 1) +
+  geom_hline(yintercept = ucl_s, color = "red", size = 1)+
+  geom_text(x = 50, y = sb + 0.005, label = "Consigne", color = "chartreuse4") +
+  geom_text(x = 70, y = lcl_s + 0.005, label = "LCL", color = "red") +
+  geom_text(x = 70, y = ucl_s - 0.005, label = "UCL", color = "red") +
+  xlab("Échantillon") +
+  scale_x_continuous( breaks = seq( 0, 100, 5 ) ) +
+  coord_cartesian( ylim = c(0.45, 0.55) ) +
+  ylab("Écart-type") +
+  theme_minimal() +
+  ggtitle("Contrôle de l'écart-type S - Zoom") +
+  theme( plot.title = element_text(hjust = 0.5) )
+
+gridExtra::grid.arrange( grobs = plots, ncol = 2 )
+```
+
+On constate que le processus est sous contrôle jusqu'au sous-échantillon 30 inclus, puis qu'une augmentation brutale et conjointe de la moyenne <SPAN STYLE="text-decoration:overline">X</SPAN> et de la variabilité du processus (étendue R / écart-type S) se produit à partir du sous-échantillon 31. Les cartes de contrôle produisent une alerte pour le sous-échantillon n°31. 
+
+Le processus retrouve une certaine stabilité à partir du sous-échantillon n°41, mais il reste néanmoins hors-contrôle.
+
+# Cartes CUSUM / EWMA avec consigne
+
+Ces cartes sont notamment utilisées pour repérer des shifts plus faibles que ceux détectés par les cartes de type Shewhart.
+
+## CUSUM
+
+Nous étudions ici les valeurs $x_{i}$ associées à 100 sous-échantillons, potentiellement unitaires. Cette fois-ci, il y a une consigne $\mu_{0} = 2$.  
+
+On pose $C_{0}^{+} = C_{0}^{-} = 0$ et observe l'évolution des quantités :  
+
+$$
+\forall i \in \{1, ..., 100\}, \left\{
+    \begin{array}{ll}
+        C_{i}^{+} = max(0, x_{i} - (\mu_{0} + K) + C_{i-1}^{+} \\
+        C_{i}^{-} = max(0, (\mu_{0} - K) - x_{i} +  C_{i-1}^{+} \\
+    \end{array}
+\right.
+$$
+Pour le coefficient $K$, on pose $K :=  k \hat{\sigma}$ avec la valeur $k = \frac{1}{2}$. Cette valeur est souvent citée dans la littérature et possède un bon temps d'ARL pour un shift d'ordre $\sigma$, combinée à une valeur $h = 5$ (voir ci-dessous).
+
+Les limites de contrôle sont $UCL = H$ et $LCL = -H$, avec $H := h\hat{\sigma}$. On choisit la valeur classique $h = 5$.  
+
+On calcule $\hat{\sigma}$ sur la base des 50 premières valeur de $x_{i}$, en supposant que le processus est sous contrôle au début des mesures.
+
+On calcule également les entier $N_{i}^{+}$ (resp. $N_{i}^{-}$) qui comptent le nombre de sous-échantillons $x_{i}$ pour lesquels $C_{i}^{+}$ (resp. $C_{i}^{-}$) est non-nul. Si la carte CUSUM produit une alerte pour un rang i, ces entiers permettent théoriquement de situer la date de perturbation du processus.
+
+Enfin, CUSUM repose sur une hypothèse de normalité des données. Il faut donc tester cette hypothèse dans la mesure du possible.
+
+## Carte EWMA
+
+On observe l'évolution des quantités $z_{i} := \lambda x_{i} + (1 - \lambda) z_{i}$ avec $z_{0} = \mu_{0}$. Ici $\mu_{0} = 2$ est la consigne. Les limites de contrôle sont données par :  
+$$
+\forall i \in \{1, ..., 100\}, \left\{
+    \begin{array}{ll}
+        UCL = \mu_{0} + L \sigma \sqrt{\frac{\lambda}{2-\lambda}[1-(1-\lambda)^{2i}]} \\
+        LCL = \mu_{0} - L \sigma \sqrt{\frac{\lambda}{2-\lambda}[1-(1-\lambda)^{2i}]} \\
+    \end{array}
+\right.
+$$
+avec les valeurs classiques $$
+\left\{
+    \begin{array}{ll}
+        \lambda = 0.1 \\
+        L = 2.7 \\
+    \end{array}
+\right.
+$$
+
+Un avantage significatif d'EWMA est que cette carte est robuste par rapport à la non-normalité des données.
+
+## Colonne 107
+
+```{r}
+don_v107 <- don %>% pull(V107)
+shapiro.test(don_v107[1:100])
+```
+
+On accepte la normalité des données, qui est importante pour CUSUM en particulier.
+
+### CUSUM
+
+```{r}
+mu <- 2
+sigma <- don_v107[1:50] %>% sd()
+k <- 0.5
+h <- 5
+K <- k * sigma
+H <- h * sigma
+nbre <- nrow(don)
+
+cp <- vector("double", nbre)
+cm <- vector("double", nbre)
+np <- vector("double", nbre)
+nm <- vector("double", nbre)
+
+cp[1] <- max(0, don_v107[1] - (mu+K) )
+cm[1] <- max(0, (mu-K) - don_v107[1] )
+np[1] <- if_else(cp[1]==0, 0, 1)
+nm[1] <- if_else(cm[1]==0, 0, 1)
+  
+for(i in 2:nbre){
+  cp[i] <- max(0, don_v107[i] - (mu+K) + cp[i-1] )
+  cm[i] <- max(0, (mu-K) - don_v107[i] + cm[i-1] )
+  np[i] <- if_else(cp[i]==0, 0, np[i-1] + 1 )
+  nm[i] <- if_else(cm[i]==0, 0, nm[i-1] + 1 )
+}
+
+cusum <- tibble(i = 1:nbre, x_i = don_v107, C_plus = round(cp,2), N_plus = np, C_moins = round(cm,2), N_moins = nm)
+
+plot_cusum = vector("list", 2)
+
+plot_cusum[[1]] <- ggplot( data = cusum %>% select(i, C_plus, C_moins) %>% mutate(C_moins = - C_moins) %>% gather(type, value, C_plus:C_moins) ) +
+  aes( x = i, y = value, color = type) +
+  geom_line(size = 1) +
+  geom_hline(yintercept = 0, color = "black", size = 1) +
+  geom_hline(yintercept = H, color = "red4", size = 1.2) +
+  geom_hline(yintercept = -H, color = "red4", size = 1.2)+
+  xlab("Pièce") +
+  scale_x_continuous( breaks = seq(0, 1000, 100) ) +
+  coord_cartesian( ylim = c(-250, 250) ) +
+  ylab("C+ / C-") +
+  theme_minimal() +
+  ggtitle("CUSUM chart") +
+  theme( plot.title = element_text(hjust = 0.5) )
+
+plot_cusum[[2]] <- ggplot( data = cusum %>% select(i, C_plus, C_moins) %>% mutate(C_moins = - C_moins) %>% gather(type, value, C_plus:C_moins) ) +
+  aes( x = i, y = value, color = type) +
+  geom_line(size = 1) +
+  geom_hline(yintercept = 0, color = "black", size = 1) +
+  geom_hline(yintercept = H, color = "red4", size = 1.2) +
+  geom_hline(yintercept = -H, color = "red4", size = 1.2)+
+  geom_text(x = 100, y = H - 0.3, label = "H", color = "red4") +
+  geom_text(x = 100, y = -H + 0.3, label = "-H", color = "red4") +
+  xlab("Pièce") +
+  scale_x_continuous( breaks = seq(0, 1000, 100) ) +
+  coord_cartesian( ylim = c(-H-0.5, H+0.5) ) +
+  ylab("C+ / C-") +
+  theme_minimal() +
+  ggtitle("CUSUM chart - Zoom 2") +
+  theme( plot.title = element_text(hjust = 0.5) )
+
+gridExtra::grid.arrange( grobs = plot_cusum, ncol = 2 )
+```
+
+On observe une alerte très franche entre les pièces/sous-échantillons 500 et 501. Le processus n'est plus sous contrôle, très significativement et soudainement. 
+
+
+```{r}
+cusum %>% slice(495:505) %>% kable()  
+```
+
+Effectivement, l'alerte en question est émise pour i = 501 ($C_{501}^{+} > H$, ici H = `r H`). On lit $N_{501}^{+} = 1$ et $N_{501}^{-} = 0$. On peut donc effectivement situer la perturbation à l'origine de l'alerte entre les i = 500 et i = 501. 
+
+À y regarder de plus près, on s'aperçoit qu'en réalité la carte émet une première alerte pour i = 303 : voir le tableau ci-dessous. On lit $N_{303}^{-} = 19$ (et $N_{303}^{+} = 0$). On peut donc situer l'événement à l'origine de cette perte de contrôle pour i = 303 - 19 = 284.
+
+
+```{r}
+cusum %>% slice(295:305) %>% kable()
+```
+
+Enfin la carte CUSUM émet aussi une alerte autour du sous-échantillon n°400, mais le dépassement de l'UCL = H est minime. Il est peut-être dû aux fluctuations d'échantillonnage.
+
+### EWMA
+
+```{r}
+lambda <- 0.1
+l <- 2.7
+
+z <- vector("double", nbre)
+ucl <- vector("double", nbre)
+lcl <- vector("double", nbre)
+
+z[1] <- ( lambda * don_v107[1] ) + ( (1-lambda) * mu ) 
+for( i in 2:nbre ){
+  z[i] <- ( lambda * don_v107[i] ) + ( (1-lambda) * z[i-1] ) 
+}
+
+for( i in 1:nbre ){
+  ucl[i] <- mu + l*sigma*sqrt( lambda * ( 1 - (1-lambda)**(2*i) ) / (2-lambda) )
+  lcl[i] <- mu - l*sigma*sqrt( lambda * ( 1 - (1-lambda)**(2*i) ) / (2-lambda) )
+}
+
+
+ewma_data <- tibble( i = 1:nbre, obs = don_v107, ewma = z, ucl = ucl, lcl = lcl)
+ewma_data <- ewma_data %>% gather(data, value, ucl:lcl)
+
+plot_ewma = vector("list", 2)
+
+plot_ewma[[1]] <- ggplot( data = ewma_data ) +
+  geom_step( aes( x = i, y = value, color = data) ) +
+  geom_line( aes(x = i, y = ewma), color = "black") +
+  geom_hline(yintercept = mu, color = "black", size = 1) +
+  xlab("Pièce") +
+  scale_x_continuous( breaks = seq(0, 1000, 100) ) +
+  scale_colour_manual(values = c("red", "blue")) +
+  ylab("EWMA") +
+  theme_minimal() +
+  ggtitle("Carte de contrôle EWMA",
+          subtitle = "lambda = 0.1, L = 2.7") +
+  theme( plot.title = element_text(hjust = 0.5),
+         plot.subtitle = element_text(hjust = 0.5) )
+
+plot_ewma[[2]] <- ggplot( data = ewma_data ) +
+  geom_step( aes( x = i, y = value, color = data) ) +
+  geom_line( aes(x = i, y = ewma), color = "black") +
+  geom_hline(yintercept = mu, color = "black", size = 1) +
+  xlab("Pièce") +
+  scale_x_continuous( breaks = seq(0, 1000, 100) ) +
+  scale_colour_manual(values = c("red", "blue")) +
+  coord_cartesian( xlim = c(0, 510), ylim = c(1.6, 2.3) ) +
+  ylab("EWMA") +
+  theme_minimal() +
+  ggtitle("Carte de contrôle EWMA - Zoom",
+          subtitle = "lambda = 0.1, L = 2.7") +
+  theme( plot.title = element_text(hjust = 0.5),
+         plot.subtitle = element_text(hjust = 0.5) )
+
+gridExtra::grid.arrange( grobs = plot_ewma, ncol = 2 )
+```
+
+La carte EWMA produit les mêmes alertes que la carte CUSUM ci-dessous :  
+- Une première alerte pour le sous-échantillon n°303.  
+- Une alerte au niveau du sous-échantillon n°400, mais avec un faible dépassement de l'UCL.  
+- Une alerte pour i = 501, avec un dépassement de seuil extrêmement important.  
+
+La carte EWMA produit deux alertes supplémentaires (i = 350 et i = 490 environ) par rapport à la carte CUSUM. Néanmoins les dépassements de seuils sont faibles et cette différence par rapport à la carte CUSUM peut probablement être imputé au choix des paramètres (L := 3 ne produit pas ces deux alertes).
+
+## Colonne 108
+
+```{r}
+don_v108 <- don %>% pull(V108)
+shapiro.test(don_v108[1:100])
+```
+À nouveau on accepte la normalité des données, ce qui a son importance pour CUSUM en particulier.
+
+### CUSUM
+```{r}
+don_v108 <- don %>% pull(V108)
+
+mu <- 2
+sigma <- don_v108[1:50] %>% sd()
+k <- 0.5
+h <- 5
+K <- k * sigma
+H <- h * sigma
+nbre <- nrow(don)
+
+cp <- vector("double", nbre)
+cm <- vector("double", nbre)
+np <- vector("double", nbre)
+nm <- vector("double", nbre)
+
+cp[1] <- max(0, don_v108[1] - (mu+K) )
+cm[1] <- max(0, (mu-K) - don_v108[1] )
+np[1] <- if_else(cp[1]==0, 0, 1)
+nm[1] <- if_else(cm[1]==0, 0, 1)
+  
+for(i in 2:nbre){
+  cp[i] <- max(0, don_v108[i] - (mu+K) + cp[i-1] )
+  cm[i] <- max(0, (mu-K) - don_v108[i] + cm[i-1] )
+  np[i] <- if_else(cp[i]==0, 0, np[i-1] + 1 )
+  nm[i] <- if_else(cm[i]==0, 0, nm[i-1] + 1 )
+}
+
+cusum <- tibble(i = 1:nbre, x_i = don_v108, C_plus = round(cp,2), N_plus = np, C_moins = round(cm,2), N_moins = nm)
+
+plot_cusum = vector("list", 2)
+
+plot_cusum[[1]] <- ggplot( data = cusum %>% select(i, C_plus, C_moins) %>% mutate(C_moins = - C_moins) %>% gather(type, value, C_plus:C_moins) ) +
+  aes( x = i, y = value, color = type) +
+  geom_line(size = 1) +
+  geom_hline(yintercept = 0, color = "black", size = 1) +
+  geom_hline(yintercept = H, color = "red4", size = 1.2) +
+  geom_hline(yintercept = -H, color = "red4", size = 1.2)+
+  xlab("Pièce") +
+  scale_x_continuous( breaks = seq(0, 1000, 100) ) +
+  coord_cartesian( ylim = c(-250, 250) ) +
+  ylab("C+ / C-") +
+  theme_minimal() +
+  ggtitle("CUSUM chart") +
+  theme( plot.title = element_text(hjust = 0.5) )
+
+plot_cusum[[2]] <- ggplot( data = cusum %>% select(i, C_plus, C_moins) %>% mutate(C_moins = - C_moins) %>% gather(type, value, C_plus:C_moins) ) +
+  aes( x = i, y = value, color = type) +
+  geom_line(size = 1) +
+  geom_hline(yintercept = 0, color = "black", size = 1) +
+  geom_hline(yintercept = H, color = "red4", size = 1.2) +
+  geom_hline(yintercept = -H, color = "red4", size = 1.2)+
+  geom_text(x = 100, y = H - 0.5, label = "H", color = "red4") +
+  geom_text(x = 100, y = -H + 0.5, label = "-H", color = "red4") +
+  xlab("Pièce") +
+  scale_x_continuous( breaks = seq(0, 1000, 100) ) +
+  coord_cartesian( ylim = c(-H-0.5, H+0.5) ) +
+  ylab("C+ / C-") +
+  theme_minimal() +
+  ggtitle("CUSUM chart - Zoom 2") +
+  theme( plot.title = element_text(hjust = 0.5) )
+
+gridExtra::grid.arrange( grobs = plot_cusum, ncol = 2 )
+```
+
+On observe une alerte très nette aux environs du sous-échantillon i = 300.
+
+```{r}
+cusum %>% slice(295:315) %>% kable()  
+```
+
+Puisque H = `r H`, le dépassement de seuil a lieu exactement en i = 307. On lit $N_{307}^{+} = 10$ : on peut donc situer l'origine de la perte de contrôle en i = 297.
+
+
+### EWMA
+
+```{r}
+lambda <- 0.1
+l <- 2.7
+
+z <- vector("double", nbre)
+ucl <- vector("double", nbre)
+lcl <- vector("double", nbre)
+
+z[1] <- ( lambda * don_v108[1] ) + ( (1-lambda) * mu ) 
+for( i in 2:nbre ){
+  z[i] <- ( lambda * don_v108[i] ) + ( (1-lambda) * z[i-1] ) 
+}
+
+for( i in 1:nbre ){
+  ucl[i] <- mu + l*sigma*sqrt( lambda * ( 1 - (1-lambda)**(2*i) ) / (2-lambda) )
+  lcl[i] <- mu - l*sigma*sqrt( lambda * ( 1 - (1-lambda)**(2*i) ) / (2-lambda) )
+}
+
+
+ewma_data <- tibble( i = 1:nbre, obs = don_v108, ewma = z, ucl = ucl, lcl = lcl)
+ewma_data_gathered <- ewma_data %>% gather(data, value, ucl:lcl)
+
+plot_ewma <- ggplot( data = ewma_data_gathered ) +
+  geom_step( aes( x = i, y = value, color = data) ) +
+  geom_line( aes(x = i, y = ewma), color = "black") +
+  geom_hline(yintercept = mu, color = "black", size = 1) +
+  xlab("Pièce") +
+  scale_x_continuous( breaks = seq(0, 1000, 100) ) +
+  scale_colour_manual(values = c("red", "blue")) +
+  ylab("EWMA") +
+  theme_minimal() +
+  ggtitle("Carte de contrôle EWMA",
+          subtitle = "lambda = 0.1, L = 2.7") +
+  theme( plot.title = element_text(hjust = 0.5),
+         plot.subtitle = element_text(hjust = 0.5) )
+
+print(plot_ewma)
+
+ewma_data %>% slice(295:310) %>% kable()
+```
+
+La carte EWMA émet une alerte significative quasiment au même endroit que CUSUM, à savoir i = 308. En effet on lit dans le tableau ci-dessus : ewma > LCL i.e $z_{i} > UCL$ pour i = 308.

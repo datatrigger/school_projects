@@ -1,0 +1,20 @@
+---
+title: "Truncated Normal Distribution"
+author: "Vincent Le Goualher"
+date: "28/03/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Truncated Normal Distribution
+
+In the part entitled "Physical approach", we assumed that the distribution of the Strickler coefficient $K_s$ is truncated normal. More precisely, the assumption can be written as follows :  
+$\forall \  x \in \mathbb{R} \ , \  \mathbb{P}(K_s \leq x) = \mathbb{P}(X \leq x \ |\ X \geq a)$ where $a$ is a positive constant and $X \sim \mathcal N(\ \mu,\  \sigma \ )$.  
+  
+Let $T_a$ denote such a truncated normal distribution, $\Phi$ the cumulative distribution function of the random variable X, and $f$ its probability density function. Then :  
+$\forall \  x \in \mathbb{R} \ , \ \Phi_{T_a}(x) =  \mathbb{P}(T_a \leq x) = \mathbb{P}(X \leq x \ |\ X \geq a) = \frac{\mathbb{P}(a \leq X \leq x)}{\mathbb{P}(X \geq a)} = \frac{\Phi (x) - \Phi (a)}{1 - \Phi (a)} I_{\{x \geq a \}}$ and $\forall \  x \in \mathbb{R} \ , \ f_{T_a}(x) = \frac{f(x)}{1 - \Phi (a)} I_{\{x \geq a \}}$.  
+
+If $\Phi (a)$ is close to $0$ as it is the case in the Strickler coefficient study, then $f_{T_a} \approx f$ on its support $[a ; + \infty [$.

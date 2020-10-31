@@ -1,0 +1,179 @@
+---
+title: 'Reliability - Part 2 : Physical Approach'
+author: "Vincent Le Goualher"
+date: "01/03/2020"
+output:
+  html_document:
+    toc : true
+    number_sections: true
+---
+
+<style>
+    body .main-container {
+        max-width: 5000px;
+    }
+</style>
+
+```{r setup, include=FALSE}
+library(knitr)
+library(tidyverse)
+library(ggplot2)
+library(gridExtra)
+library(evd)
+library(EnvStats)
+library(truncnorm)
+library(kableExtra)
+opts_chunk$set(include = TRUE,
+               warning = FALSE,
+               fig.align = "center",
+               fig.retina = 2,
+               fig.width = 10,
+               cache = FALSE,
+               cache.lazy = FALSE)
+```
+
+# Physical approach
+
+In this section, the height of the water level rise is determined by the following model :  
+  
+$H = (\frac {Q} { K_{s} B \sqrt{ \frac{ Z_{m}-Z_{v} } {L} } })^{ \frac{3}{5} } \qquad (1)$  
+  
+The height of the seawall is represented by $h_{d}$.  
+
+The variables of the above equation are described in the two following sections.  
+
+## Deterministic variables   
+  
+Some features of the model are supposed to be deterministic :  
+- $L$ : The length of the section of the river taken into consideration. $L = 5 000\ m$.  
+- $B$ : The width of the river. $B = 300\ m$.  
+- $Z_{b}$ : The height (above sea level) of the riverbank. $Z_{b} = 55.5\ m$. 
+
+## Random variables and statistical assumptions   
+  
+The rest of the variables are supposed to be random :  
+- $Q$ : The flow of the river in $m^{3}.s^{-1}$. $Q \sim Gumbel(\ mode=1013,\  scale=558 \ )$  
+- $K_{s}$ : The river bed coefficient of friction, also known as the Strickler coefficient, in $m^{\frac{1}{3}}.s^{-1}$. $K_{s} \sim \mathcal N(\ \mu=30,\  \sigma=7.5 \ )$  
+- $Z_{m},Z_{v}$ : The height (above sea level) of the river bed upstream and downstream. $Z_{m} \sim \mathcal T(\ m=55,\  h=1 \ )$ and $Z_{v} \sim \mathcal T(\ m=50,\  h=1 \ )$ where $\mathcal T(m,\ h)$ is the triangular distribution of mean $m$ and half-range $h$. 
+  
+Finally, $Z_{c} := H + Z_{v}$ and $Z_{d} := Z_{b} + h_{d}$. $S$, the height of the water above the seawall is defined as follows : $S := Z_{c} - Z_{d} = H + Z_{v} - (Z_{b} + h_{d})$
+
+## Taking physical realities into account  
+
+The above models assumed for the flow $Q$ and the coefficient of friction $K_{s}$ must be corrected to ensure physical consistency.  
+
+### The flow $Q$
+  
+```{r q}
+ggplot( tibble(x=(-500:5000)), aes(x) ) +
+  stat_function(fun = dgumbel, args = list( loc = 1013,  scale = 558 ), geom = "line", color = "red", size = 0.5) +
+  stat_function(fun = dgumbel, args = list( loc = 1013,  scale = 558 ), xlim = c(-500,0), geom = "area", color = "red", fill = "red") +
+  annotate( "text", x = -350, y = 6e-5, label = expression( P(Q <= 0) %~~% 0.00215 ) ) +
+  xlab( expression(Q~(m^3/s)) ) +
+  scale_x_continuous( breaks = seq(-500, 5000, by=500) ) +
+  ylab("Density") +
+  theme_minimal() +
+  ggtitle( expression(Assumed~distribution~of~Q~(m^3/s)) ) +
+  theme( plot.title = element_text(hjust = 0.5) )
+
+
+```
+  
+  
+As a flow, $Q \geq 0$. Yet if $Q \sim Gumbel(\ mode=1013,\  scale=558 \ )$, then $\mathbb{P}(Q \leq 0) \approx 0.00215$. For the simulation in the next section, we will set $Q=0$ if the simulation gives $Q < 0$. Hence $Q$ actually becomes a mixed random variable on $[0;+\infty]$: the density of $Q$ is equal to the density $Gumbel(\ mode=1013,\  scale=558 \ )$ on $]0;+ \infty[$, and $\mathbb{P}(Q = 0) \approx 0.00215$.
+  
+### The Strickler coefficient $K_{s}$
+  
+In **Hydraulics of Open Channel Flow$** by Hubert Chanson, it is said that the Strickler coefficient "varies from 20 (rough stone and rough surface) to 80 m<sup>1/3</sup>/s (smooth concrete and cast iron)". However, the assumed distribution for the coefficient $K_{s}$ intentionally allows it to be greater or lower than these limits. The reason for this choice is that in the equation $(1)$, the purpose of $K_{s}$ is also to bring noise into the variable H in order to model non-represented phenomena. Having said that, $K_s$ cannot be less than or equal to 0, given the equation $(1)$.  
+
+Hence we make the assumption $K_s \geq q_{10^{-4}}$, where $\mathbb{P}(X \leq q_{10^{-4}}) = 10^{-4}$ and $X \sim \mathcal N(\ \mu=30,\  \sigma=7.5 \ )$.  
+$q_{10^{-4}}\approx 2.1014$. Finally, the distribution of $K_s$ is supposed to be a truncated normal law :  
+
+```{r ks}
+ggplot( tibble(x=(-10:70)), aes(x) ) +
+  stat_function(fun = dnorm,
+                args = list( mean = 30,  sd = 7.5 ),
+                geom = "line",
+                aes(color = "red", linetype = "solid"),
+                size = 1) +
+  stat_function(fun = dtruncnorm,
+                args = list( a = qnorm(1e-4, mean=30, sd=7.5, lower.tail = TRUE), b = Inf, mean = 30, sd = 7.5 ),
+                xlim = c(0,70),
+                geom = "line",
+                aes(color = "black", linetype = "dotted"),
+                size = 1.2) +
+  scale_color_identity(name = "Distribution", breaks = c("red", "black"), labels = c("Normal", "Truncated Normal"), guide = "legend") +
+  scale_linetype_identity(name = "Distribution", breaks = c("solid", "dotted"), labels = c("Normal", "Truncated Normal"), guide = "legend") +
+  scale_x_continuous( breaks = seq(-10,70,by=10) ) +
+  xlab( expression(K[s]~(m^paste(1,'/',3) /s)) ) + 
+  ylab("Density") +
+  theme_minimal() +
+  ggtitle( expression(Assumed~distribution~of~K[s]~(m^paste(1,'/',3) /s)) ) +
+  theme( plot.title = element_text(hjust = 0.5) )
+```
+
+The normal law and the truncated normal law are very similar because the cut is made far from the mean $\mu = 30$, at $q_{10^{-4}}\approx 2.1014$. Thus this adjustement will have minor consequences on the modeling of $K_s$, while avoiding undefined, infinite and absurdly high values for the variable H in equation $(1)$.
+
+## Simulation of the height of water above the riverbank
+
+Let us simulate 1 000 000 values for $S_{0} := H + Z_{v} - Z_{b}$, which is the height of water above the riverbank. Hence $S_{0}$ is negative if the river is not in spate. We can also note that $S_{0} = S$ given that $h_{d} = 0 \ m$. The simulation is done given the statistical assumptions made about the random variables.
+
+```{r simulation, include = TRUE}
+set.seed(66)
+
+n <- 1e7
+
+l <- 5000
+b <- 300
+zb <- 55.5
+
+don <- tibble(
+  q = rgumbel( n = n, loc = 1013, scale = 558 ),
+  ks = rtruncnorm( n = n, a = qnorm(1e-4, mean=30, sd=7.5, lower.tail = TRUE), b = Inf, mean = 30, sd = 7.5 ),
+  zm = rtri(n, min = 54, max = 56, mode = 55),
+  zv = rtri(n, min = 49, max = 51, mode = 50),
+) %>%
+mutate(
+  q = if_else( q <= 0, 0, q),
+  s0 = ( q / ( ks * b * sqrt( (zm - zv) / l) ) )^(3/5) + zv - zb
+)
+
+s0 <- don %>% pull(s0)
+
+ggplot( data = don ) +
+  geom_histogram( aes( x = s0, stat(density) ), binwidth = 0.1, color = "black" ) +
+  stat_density( aes( x = s0 ), geom = "line", color = "red", size = 1.1 ) +
+  coord_cartesian( xlim = c(-7,7) ) +
+  xlab( expression("S"[0]) ) + 
+  scale_x_continuous( breaks = seq(-10,10,by=1) ) +
+  ylab( "Density" ) +
+  theme_minimal() +
+  ggtitle( expression("Histogram of 10 000 000 values for S"[0]) ) +
+  theme( plot.title = element_text(hjust = 0.5) )
+```
+
+In this simulation, the height of water above the riverbank $S_0$ is between `r round(min(s0),2)` m and `r round(max(s0),2)` m. The mean and median of $S_0$ are relatively close, respectively equals `r round(mean(s0),2)` m and its median equals `r round(median(s0),2)`. and its standard deviation is `r round(sd(s0),2)` m.  
+The distribution of $S_0$ looks asymmetrical. This is confirmed by its positive but moderate skewness equal to `r round(skewness(s0),2)`. We can also note that $S_0$ is light-tailed or leptokurtic as its kurtosis is equal to `r round(kurtosis(s0),2)`.  
+  
+We now give the quantiles of the distribution of $S_0$ for the probability 0.9, 0.99 and so forth :
+
+```{r quantiles, include = TRUE}
+quantiles <- tibble(
+  power = 1:6,
+  probability = str_c('1 - 10^(-', power, ')'),
+  quantile = s0 %>% quantile( 1 - 10^(-power) ) %>% as.double() %>% round(2) %>% as.character() %>% str_c(" m")
+) %>%
+  select(-power)
+
+quantiles %>%
+  kable( caption = "Quantiles for the height of the water over the riverbank over 10 000 000 simulations" ) %>%
+  kable_styling(
+    full_width = T,
+    position = 'center',
+    bootstrap_options = c("striped", "hover")
+  )
+
+```
+
+
+
